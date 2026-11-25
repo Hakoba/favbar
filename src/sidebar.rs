@@ -712,7 +712,7 @@ impl App {
                 }
                 win::open(&format!("{}/#/links", self.profile.studio()), "")?;
             }
-            Action::Strata => actions::strata(&mut self.profile)?,
+            Action::Strata => crate::strata::open(&self.profile)?,
             Action::Metric("cpu") => {
                 let info = actions::temperature(&self.profile)?;
                 self.say(&info);
@@ -734,7 +734,7 @@ impl App {
         Ok(())
     }
     fn menu(&mut self) -> actions::Result {
-        let options = [
+        let mut options = vec![
             "Обновить даты (F5)",
             "Сортировка: дата / имя",
             "Тема",
@@ -748,9 +748,15 @@ impl App {
             "Скрыть",
             "Выход",
         ];
-        match choose(&options) {
-            Some(0) => self.scan(),
-            Some(1) => {
+        if crate::strata::configured(&self.profile) {
+            options.insert(9, "Настройки Strata и Qwen Code…");
+        }
+        match choose(&options).map(|index| options[index]) {
+            Some("Настройки Strata и Qwen Code…") => {
+                crate::strata::open(&self.profile)?
+            }
+            Some("Обновить даты (F5)") => self.scan(),
+            Some("Сортировка: дата / имя") => {
                 self.profile.state["sort"] = (if self.profile.state["sort"] == "date"
                     || self.profile.state["sort"].is_null()
                 {
@@ -761,40 +767,42 @@ impl App {
                 .into();
                 self.save();
             }
-            Some(2) => {
+            Some("Тема") => {
                 if let Some(i) = choose(&["Как в Windows", "Светлая", "Тёмная"]) {
                     self.profile.state["theme"] = ["auto", "light", "dark"][i].into();
                     self.save();
                 }
             }
-            Some(3) => {
+            Some("Перенести на другой край") => {
                 let right = self.profile.state["edge"] != "right";
                 self.profile.state["edge"] = (if right { "right" } else { "left" }).into();
                 unsafe { win::ui_edge(right as i32) }
                 self.save();
             }
-            Some(4) => {
+            Some("Следующий монитор") => {
                 let (x, y) = win::monitor();
                 self.profile.state["monitor"] = json!([x, y]);
                 self.save();
             }
-            Some(5) => {
+            Some("Показать скрытые сервисы") => {
                 for v in array(&mut self.profile.cfg, "services") {
                     v["hidden"] = false.into();
                 }
                 self.edited();
             }
-            Some(6) => self.add(&win::pick(true)),
-            Some(7) => {
+            Some("Добавить папку…") => self.add(&win::pick(true)),
+            Some("Открыть config.json") => {
                 Command::new("notepad.exe")
                     .arg(&self.profile.config_path)
                     .spawn()
                     .map_err(|e| e.to_string())?;
             }
-            Some(8) => win::open(&self.profile.dir.to_string_lossy(), "")?,
-            Some(9) => help(),
-            Some(10) => self.action(Action::Hide)?,
-            Some(11) => self.closing = true,
+            Some("Папка профиля") => {
+                win::open(&self.profile.dir.to_string_lossy(), "")?
+            }
+            Some("Справка (F1)") => help(),
+            Some("Скрыть") => self.action(Action::Hide)?,
+            Some("Выход") => self.closing = true,
             _ => {}
         }
         Ok(())
@@ -1041,6 +1049,12 @@ impl App {
                 _ => {}
             },
             5 => self.tick(),
+            14 => crate::strata::load_model(&self.profile, side != 0, row != 0),
+            15 => crate::strata::submit(&mut self.profile, side),
+            16 => {
+                self.profile.state["strata_window_position"] = json!([row, side]);
+                self.save();
+            }
             13 if !self.tip_busy => {
                 self.tip_busy = true;
                 let tx = self.tx.clone();

@@ -37,6 +37,7 @@ std::vector<Row> nextRows;
 std::deque<Event> events;
 HWND window;
 HWND timerDialog;
+HWND strataDialog;
 void refreshTimerTheme();
 HWND tipWindow;
 wstring tipText;
@@ -640,7 +641,11 @@ extern "C"
         auto previous = bg;
         palette(theme);
         if (previous != bg)
+        {
             refreshTimerTheme();
+            if (strataDialog)
+                SendMessageW(strataDialog, WM_THEMECHANGED, 0, 0);
+        }
         auto same = [](const Row &a, const Row &b) {
             return a.left == b.left && a.right == b.right && a.hint == b.hint && a.path == b.path &&
                    a.style == b.style && a.depth == b.depth && a.leftDetail == b.leftDetail &&
@@ -711,6 +716,8 @@ extern "C"
             if (GetMessageW(&m, nullptr, 0, 0) <= 0)
                 return 0;
             if (timerDialog && IsDialogMessageW(timerDialog, &m))
+                continue;
+            if (strataDialog && IsDialogMessageW(strataDialog, &m))
                 continue;
             TranslateMessage(&m);
             DispatchMessageW(&m);
@@ -820,7 +827,7 @@ extern "C"
     {
         return (INT_PTR)ShellExecuteW(window, L"open", path, nullptr, *cwd ? cwd : nullptr, SW_SHOWNORMAL) > 32;
     }
-    const wchar_t *ui_pick(int folder)
+    const wchar_t *pickFrom(int folder, HWND owner, const wchar_t *initial)
     {
         result.clear();
         ComPtr<IFileOpenDialog> dialog;
@@ -829,7 +836,13 @@ extern "C"
         DWORD flags;
         dialog->GetOptions(&flags);
         dialog->SetOptions(flags | FOS_FORCEFILESYSTEM | (folder ? FOS_PICKFOLDERS : FOS_ALLOWMULTISELECT));
-        if (SUCCEEDED(dialog->Show(window)))
+        if (initial && *initial)
+        {
+            ComPtr<IShellItem> item;
+            if (SUCCEEDED(SHCreateItemFromParsingName(initial, nullptr, IID_PPV_ARGS(&item))))
+                dialog->SetFolder(item.Get());
+        }
+        if (SUCCEEDED(dialog->Show(owner)))
         {
             ComPtr<IShellItemArray> items;
             if (SUCCEEDED(dialog->GetResults(&items)))
@@ -851,6 +864,10 @@ extern "C"
             }
         }
         return result.c_str();
+    }
+    const wchar_t *ui_pick(int folder)
+    {
+        return pickFrom(folder, window, nullptr);
     }
     const wchar_t *ui_clip(const wchar_t *value, int write)
     {
@@ -967,6 +984,7 @@ extern "C"
     }
 }
 #include "dialogs.inc"
+#include "strata.inc"
 #include "shutdown.inc"
 #include "icons.inc"
 #include "metrics.inc"

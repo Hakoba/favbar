@@ -50,7 +50,7 @@ extern "C" {
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
-unsafe fn copy(p: *const u16) -> String {
+pub(crate) unsafe fn copy(p: *const u16) -> String {
     if p.is_null() {
         return String::new();
     }
@@ -171,6 +171,7 @@ pub fn menu(names: &[String]) -> Option<usize> {
                 }
                 "Показать скрытые сервисы" => (0xe890, false, false),
                 "Открыть config.json" => (0xe713, true, false),
+                "Настройки Strata и Qwen Code…" => (0xe713, false, false),
                 "Справка (F1)" => (0xe897, false, false),
                 "Выход" => (0xe8bb, true, false),
                 _ => (0, false, false),

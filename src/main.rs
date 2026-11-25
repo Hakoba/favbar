@@ -4,6 +4,7 @@ mod bookmarks;
 mod jobs;
 mod profile;
 mod sidebar;
+mod strata;
 mod win;
 use profile::{s, Profile};
 use std::{env, path::PathBuf};

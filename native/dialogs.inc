@@ -22,7 +22,8 @@ void styleCaption(HWND h)
     DwmSetWindowAttribute(h, DWMWA_CAPTION_COLOR, &bg, sizeof(bg));
     DwmSetWindowAttribute(h, DWMWA_TEXT_COLOR, &muted, sizeof(muted));
 }
-HWND popupWindow(const wchar_t *cls, WNDPROC proc, const wchar_t *title, int height, void *data = nullptr)
+HWND popupWindow(const wchar_t *cls, WNDPROC proc, const wchar_t *title, int height, void *data = nullptr,
+                 int width = popupWidth, DWORD style = popupStyle)
 {
     auto inst = GetModuleHandleW(nullptr);
     WNDCLASSW wc{};
@@ -36,14 +37,14 @@ HWND popupWindow(const wchar_t *cls, WNDPROC proc, const wchar_t *title, int hei
     GetWindowRect(window, &owner);
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &mi);
-    RECT outer{0, 0, dpi(popupWidth), dpi(height)};
-    AdjustWindowRectExForDpi(&outer, popupStyle, FALSE, WS_EX_DLGMODALFRAME, GetDpiForWindow(window));
+    RECT outer{0, 0, dpi(width), dpi(height)};
+    AdjustWindowRectExForDpi(&outer, style, FALSE, WS_EX_DLGMODALFRAME, GetDpiForWindow(window));
     int w = outer.right - outer.left, h = outer.bottom - outer.top;
     const auto &work = mi.rcWork;
     int x = edge == ABE_LEFT ? owner.right + dpi(12) : owner.left - w - dpi(12);
     x = std::clamp(x, (int)work.left, std::max((int)work.left, (int)work.right - w));
     int y = work.top + std::max(0, (int)(work.bottom - work.top - h) / 2);
-    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, cls, title, popupStyle, x, y, w, h, window, nullptr, inst, data);
+    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, cls, title, style, x, y, w, h, window, nullptr, inst, data);
     if (dlg)
         styleCaption(dlg);
     return dlg;
