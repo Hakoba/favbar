@@ -19,6 +19,7 @@ extern "C" {
     fn ui_finish(theme: i32);
     fn ui_menu(items: *const MenuItem, n: i32) -> i32;
     fn ui_input(title: *const u16, initial: *const u16) -> *const u16;
+    pub fn ui_shutdown_timer();
     fn ui_pick(folder: i32) -> *const u16;
     fn ui_clip(value: *const u16, write: i32) -> *const u16;
     fn ui_explorer(dest: *const u16) -> *const u16;

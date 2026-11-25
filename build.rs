@@ -47,6 +47,7 @@ fn main() {
         "windowscodecs",
         "pdh",
         "dwmapi",
+        "uxtheme",
     ] {
         println!("cargo:rustc-link-lib={lib}");
     }

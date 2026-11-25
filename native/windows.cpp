@@ -6,6 +6,7 @@
 #include <commdlg.h>
 #include <cwchar>
 #include <deque>
+#include <dwmapi.h>
 #include <exdisp.h>
 #include <shellapi.h>
 #include <shldisp.h>
@@ -13,6 +14,7 @@
 #include <shlwapi.h>
 #include <string>
 #include <vector>
+#include <uxtheme.h>
 #include <windowsx.h>
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
@@ -34,6 +36,8 @@ std::vector<Row> rows;
 std::vector<Row> nextRows;
 std::deque<Event> events;
 HWND window;
+HWND timerDialog;
+void refreshTimerTheme();
 HWND tipWindow;
 wstring tipText;
 TOOLINFOW tipInfo{sizeof(TOOLINFOW)};
@@ -635,6 +639,8 @@ extern "C"
     {
         auto previous = bg;
         palette(theme);
+        if (previous != bg)
+            refreshTimerTheme();
         auto same = [](const Row &a, const Row &b) {
             return a.left == b.left && a.right == b.right && a.hint == b.hint && a.path == b.path &&
                    a.style == b.style && a.depth == b.depth && a.leftDetail == b.leftDetail &&
@@ -704,6 +710,8 @@ extern "C"
         {
             if (GetMessageW(&m, nullptr, 0, 0) <= 0)
                 return 0;
+            if (timerDialog && IsDialogMessageW(timerDialog, &m))
+                continue;
             TranslateMessage(&m);
             DispatchMessageW(&m);
         }
@@ -746,6 +754,7 @@ extern "C"
                                         GetModuleHandleW(nullptr), nullptr);
             if (!tipWindow)
                 return;
+            SetWindowTheme(tipWindow, L"", L"");
             tipInfo.hwnd = window;
             tipInfo.uId = 1;
             tipInfo.uFlags = TTF_TRACK | TTF_ABSOLUTE;
@@ -753,6 +762,11 @@ extern "C"
             SendMessageW(tipWindow, TTM_ADDTOOLW, 0, (LPARAM)&tipInfo);
             SendMessageW(tipWindow, TTM_SETMAXTIPWIDTH, 0, dpi(340));
         }
+        RECT padding{dpi(10), dpi(7), dpi(10), dpi(7)};
+        SendMessageW(tipWindow, TTM_SETMARGIN, 0, (LPARAM)&padding);
+        SendMessageW(tipWindow, WM_SETFONT, (WPARAM)font, FALSE);
+        SendMessageW(tipWindow, TTM_SETTIPBKCOLOR, surface, 0);
+        SendMessageW(tipWindow, TTM_SETTIPTEXTCOLOR, fg, 0);
         tipText = body;
         tipInfo.lpszText = tipText.data();
         SendMessageW(tipWindow, TTM_UPDATETIPTEXTW, 0, (LPARAM)&tipInfo);
@@ -801,10 +815,6 @@ extern "C"
         DestroyMenu(m);
         DeleteObject(brush);
         return id - 1;
-    }
-    int ui_msg(const wchar_t *s, int ask)
-    {
-        return MessageBoxW(window, s, L"FavBar", ask ? MB_YESNO | MB_ICONQUESTION : MB_OK) == IDYES;
     }
     int ui_open(const wchar_t *path, const wchar_t *cwd)
     {
@@ -957,5 +967,6 @@ extern "C"
     }
 }
 #include "dialogs.inc"
+#include "shutdown.inc"
 #include "icons.inc"
 #include "metrics.inc"

@@ -6,6 +6,26 @@ use std::{
     process::{Child, Command},
 };
 pub type Result<T = ()> = std::result::Result<T, String>;
+#[no_mangle]
+pub extern "C" fn favbar_shutdown_command(seconds: i32) -> i32 {
+    let system = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let mut command = Command::new(system.join("System32").join("shutdown.exe"));
+    match seconds {
+        -1 => {
+            command.arg("/a");
+        }
+        60..=604800 => {
+            command.args(["/s", "/t", &seconds.to_string()]);
+        }
+        _ => return 87,
+    }
+    match command.creation_flags(0x08000000).output() {
+        Ok(output) => output.status.code().unwrap_or(1),
+        Err(e) => e.raw_os_error().unwrap_or(1),
+    }
+}
 pub fn run(mut command: Command) -> Result<Child> {
     command.spawn().map_err(|e| e.to_string())
 }
@@ -63,6 +83,14 @@ pub fn command(p: &Profile, b: &J, selected: &str) -> Result<Option<Child>> {
         return Ok(None);
     }
     let template = s(b, "cmd", "");
+    let legacy_timer = s(b, "id", "") == "shutdown_timer"
+        && Path::new(template)
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("shutdown_timer.pyw"));
+    if s(b, "action", "") == "shutdown_timer" || legacy_timer {
+        unsafe { win::ui_shutdown_timer() };
+        return Ok(None);
+    }
     if template.trim().is_empty() {
         return Err("Пустая команда".into());
     }
