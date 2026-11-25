@@ -18,6 +18,7 @@ enum Action {
     None,
     Menu,
     Home,
+    Search,
     Add,
     Hide,
     Section(&'static str),
@@ -98,6 +99,9 @@ pub struct App {
     preview: bool,
     services: HashMap<String, bool>,
     queue: Queue,
+    queue_source: Option<String>,
+    preview_busy: bool,
+    preview_next: Option<String>,
     metrics: [f64; 7],
     gpu: bool,
     hermes: Option<Child>,
@@ -125,6 +129,9 @@ impl App {
             preview,
             services: HashMap::new(),
             queue: Queue::default(),
+            queue_source: None,
+            preview_busy: false,
+            preview_next: None,
             metrics: [0.; 7],
             gpu: false,
             hermes: None,
@@ -288,7 +295,7 @@ impl App {
         self.rows.push(
             Row::new("Избранное", Action::Home)
                 .right("Добавить", Action::Add)
-                .hint("Домой · добавить текущую папку в избранное")
+                .hint("Быстрый переход (Ctrl+K) · домой · добавить папку")
                 .style(7),
         );
         let mut roots: Vec<_> = list(&self.profile.cfg, "favorites")
@@ -335,7 +342,7 @@ impl App {
                 let mut r = Row::new(name(p), Action::File(p.into()))
                     .right("↗ В папку", Action::Reveal(p.into()))
                     .style(4)
-                    .hint(p);
+                    .hint(format!("{p}   ·   Пробел — предпросмотр"));
                 r.path = p.into();
                 self.rows.push(r);
             }
@@ -486,7 +493,7 @@ impl App {
                         format!("ComfyUI · {}", self.queue.label),
                         Action::Metric("comfy"),
                     )
-                    .hint("Правый клик — управление очередью и уведомления"),
+                    .hint("Открыть очередь · правый клик — уведомления и действия"),
                 );
             }
         }
@@ -556,7 +563,12 @@ impl App {
         };
         if !self.probing && (queue.is_some() || !services.is_empty()) {
             self.probing = true;
-            jobs::probe(services, queue, self.tx.clone());
+            jobs::probe(
+                services,
+                queue,
+                unsafe { win::ui_queue_visible() != 0 },
+                self.tx.clone(),
+            );
         }
     }
     fn timer(&self) {
@@ -584,13 +596,43 @@ impl App {
                     self.scanning = false;
                 }
                 Update::Message(s) => self.say(&s),
+                Update::Preview(path, frame) => {
+                    self.preview_busy = false;
+                    if win::preview_matches(&path) {
+                        frame.show();
+                    }
+                    if let Some(next) = self
+                        .preview_next
+                        .take()
+                        .filter(|p| p != &path && win::preview_matches(p))
+                    {
+                        self.decode_preview(next);
+                    }
+                }
                 Update::GpuTip(s) => {
                     self.tip_busy = false;
                     win::tip(&s);
                 }
-                Update::Status(services, q) => {
+                Update::QueueCommand(base, ok) => {
+                    if self.profile.comfy().as_ref() == Some(&base) {
+                        win::queue_notice(if ok {
+                            "Запрос отправлен"
+                        } else {
+                            "Не удалось снять задачу"
+                        });
+                        self.tick();
+                    }
+                }
+                Update::Status(services, base, q) => {
                     self.probing = false;
                     self.services.extend(services);
+                    if self.profile.comfy() != base {
+                        continue;
+                    }
+                    if unsafe { win::ui_queue_visible() != 0 } {
+                        win::queue_rows(q.as_ref());
+                        self.queue_source = base;
+                    }
                     self.queue.update(
                         q,
                         s(&self.profile.state, "notify", "long"),
@@ -626,12 +668,13 @@ impl App {
         match a {
             Action::None => {}
             Action::Menu => self.menu()?,
+            Action::Search => self.search_folders(),
             Action::Home => {
                 if let Some(v) = list(&self.profile.cfg, "favorites")
                     .iter()
                     .find(|v| flag(v, "home", false))
                 {
-                    win::explorer(&expand(s(v, "path", "")));
+                    self.open_folder(&expand(s(v, "path", "")))?;
                 } else {
                     self.say("Домашняя папка не задана")
                 }
@@ -658,10 +701,7 @@ impl App {
                 self.save();
             }
             Action::Folder { path, .. } => {
-                self.selected = path.clone();
-                if win::explorer(&path).is_empty() {
-                    return Err(format!("Не удалось открыть {path}"));
-                }
+                self.open_folder(&path)?;
             }
             Action::Expand { root, path } => {
                 self.selected = path.clone();
@@ -718,9 +758,13 @@ impl App {
                 self.say(&info);
             }
             Action::Metric("comfy") => {
-                if let Some(url) = self.profile.comfy() {
-                    win::open(&url, "")?
+                if unsafe { win::ui_queue_visible() == 0 } {
+                    self.queue_source = None;
                 }
+                unsafe {
+                    win::ui_queue_open();
+                }
+                self.tick();
             }
             Action::Metric("ram") => self.say(&format!(
                 "Свободно {:.1} ГБ",
@@ -732,6 +776,64 @@ impl App {
             }
         }
         Ok(())
+    }
+    fn open_folder(&mut self, path: &str) -> actions::Result {
+        if !Path::new(path).is_dir() || win::explorer(path).is_empty() {
+            return Err(format!("Не удалось открыть {path}"));
+        }
+        self.selected = path.to_owned();
+        let recent = array(&mut self.profile.state, "recent_folders");
+        let id = key(path);
+        recent.retain(|v| v.as_str().is_some_and(|p| key(p) != id));
+        recent.insert(0, path.into());
+        recent.truncate(40);
+        self.save();
+        Ok(())
+    }
+    fn search_folders(&self) {
+        let mut seen = std::collections::HashSet::new();
+        unsafe {
+            win::ui_search_begin();
+        }
+        let mut add = |label: &str, p: &str| {
+            if !p.is_empty() && seen.insert(key(p)) {
+                win::search_item(label, p);
+            }
+        };
+        for f in list(&self.profile.cfg, "favorites") {
+            let p = expand(s(f, "path", ""));
+            add(s(f, "name", name(&p)), &p);
+        }
+        for p in list(&self.profile.state, "recent_folders")
+            .iter()
+            .filter_map(J::as_str)
+        {
+            add(name(p), p);
+        }
+        for r in &self.rows {
+            if let Action::Folder { path, .. } = &r.actions[0] {
+                add(name(path), path);
+            }
+        }
+        unsafe {
+            win::ui_search_show();
+        }
+    }
+    fn decode_preview(&mut self, path: String) {
+        self.preview_busy = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let image = win::PreviewFrame::load(&path);
+            jobs::send(&tx, Update::Preview(path, image));
+        });
+    }
+    fn preview_file(&mut self, path: String) {
+        win::preview_file(&path);
+        if self.preview_busy {
+            self.preview_next = Some(path);
+        } else {
+            self.decode_preview(path);
+        }
     }
     fn menu(&mut self) -> actions::Result {
         let mut options = vec![
@@ -747,11 +849,13 @@ impl App {
             "Справка (F1)",
             "Скрыть",
             "Выход",
+            "Быстрый переход…  Ctrl+K",
         ];
         if crate::strata::configured(&self.profile) {
             options.insert(9, "Настройки Strata и Qwen Code…");
         }
         match choose(&options).map(|index| options[index]) {
+            Some("Быстрый переход…  Ctrl+K") => self.search_folders(),
             Some("Настройки Strata и Qwen Code…") => {
                 crate::strata::open(&self.profile)?
             }
@@ -915,9 +1019,14 @@ impl App {
                 }
             }
             Action::File(path) | Action::Reveal(path) => {
-                match choose(&["Показать в папке", "Копировать путь", "Убрать с полки"])
-                {
+                match choose(&[
+                    "Показать в папке",
+                    "Копировать путь",
+                    "Убрать с полки",
+                    "Предпросмотр  Space",
+                ]) {
                     Some(0) => actions::reveal(&path)?,
+                    Some(3) => self.preview_file(path),
                     Some(1) => {
                         win::clipboard(Some(&path));
                     }
@@ -1018,7 +1127,9 @@ impl App {
             .rows
             .get(row as usize)
             .map(|r| {
-                if k == 1 && side == 2 && matches!(r.actions[0], Action::Shelf) {
+                if k == 1 && side == 2 && matches!(r.actions[0], Action::Home) {
+                    Action::Search
+                } else if k == 1 && side == 2 && matches!(r.actions[0], Action::Shelf) {
                     Action::ShelfClear
                 } else {
                     r.actions[usize::from(side == 1)].clone()
@@ -1037,6 +1148,11 @@ impl App {
                 }
             }
             4 => match side {
+                32 => {
+                    if let Action::File(p) | Action::Reveal(p) = a {
+                        self.preview_file(p);
+                    }
+                }
                 112 => help(),
                 116 => self.scan(),
                 27 => self.action(Action::Hide)?,
@@ -1049,6 +1165,34 @@ impl App {
                 _ => {}
             },
             5 => self.tick(),
+            17 => self.search_folders(),
+            18 => {
+                if let Err(e) = self.open_folder(&data) {
+                    win::message(&e, false);
+                } else {
+                    unsafe {
+                        win::ui_search_close();
+                    }
+                }
+            }
+            19 => self.tick(),
+            20 => {
+                if let Some(base) = self
+                    .profile
+                    .comfy()
+                    .filter(|base| self.queue_source.as_ref() == Some(base))
+                {
+                    if !data.is_empty() {
+                        jobs::cancel_waiting(base, data, self.tx.clone());
+                    }
+                }
+            }
+            21 => {
+                if let Some(base) = self.profile.comfy() {
+                    win::open(&base, "")?;
+                }
+            }
+            22 => actions::reveal(&data)?,
             14 => crate::strata::load_model(&self.profile, side != 0, row != 0),
             15 => crate::strata::submit(&mut self.profile, side),
             16 => {
@@ -1124,7 +1268,7 @@ fn choose(labels: &[&str]) -> Option<usize> {
 }
 
 fn help() {
-    win::message("FavBar\n\nНажмите значок или название папки, чтобы открыть её в Проводнике. Клик по остальной строке раскрывает или сворачивает ветку. Папку без видимых подпапок можно открыть по всей строке. Средняя кнопка открывает новое окно. Правый клик показывает действия.\n\nПеретащите файлы на полку или с полки в другое окно. Ссылку можно перетащить на строку закладок или вставить из буфера.\n\nСтрелки клавиатуры выбирают строку. Enter нажимает слева, Shift+Enter справа. F5 обновляет даты. Потяните внутренний край панели, чтобы изменить ширину.",false);
+    win::message("FavBar\n\nНажмите значок или название папки, чтобы открыть её в Проводнике. Клик по остальной строке раскрывает или сворачивает ветку. Папку без подпапок можно открыть по всей строке. Средняя кнопка открывает новое окно. Лупа или Ctrl+K открывает поиск по избранным и недавним папкам.\n\nПеретащите файлы на полку или с полки в другое окно. Пробел на файле открывает предпросмотр. Ссылку можно перетащить на строку закладок или вставить из буфера.\n\nНажмите строку ComfyUI, чтобы посмотреть очередь или снять ожидающую задачу.\n\nСтрелки выбирают строку. Enter нажимает слева, Shift+Enter справа. F5 обновляет даты. Потяните внутренний край панели, чтобы изменить ширину.",false);
 }
 
 #[cfg(test)]

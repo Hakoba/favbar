@@ -45,6 +45,7 @@ fn main() {
         "advapi32",
         "comctl32",
         "windowscodecs",
+        "mfuuid",
         "pdh",
         "dwmapi",
         "uxtheme",

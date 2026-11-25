@@ -384,9 +384,10 @@ void drawBand(HDC dc, const Layout::Band &band, int w)
         fill(dc, {margin, end - 1, w - margin, end}, border);
         break;
     case Favorites:
-        caption(L"Избранное", margin, w - dpi(75));
+        caption(L"Избранное", margin, w - dpi(100));
+        icon(dc, {w - dpi(100), y, w - dpi(74), end}, 0xe721, over && hoverSide == 2 ? accent : muted);
         icon(dc, {w - dpi(68), y, w - dpi(42), end}, 0xe80f, over && !hoverSide ? accent : muted);
-        icon(dc, right, 0xe710, over && hoverSide ? accent : muted);
+        icon(dc, right, 0xe710, over && hoverSide == 1 ? accent : muted);
         break;
     case Folder: {
         bool home = r.left.find(L'⌂') == 0;
@@ -577,6 +578,8 @@ int hit(int y)
 int side(int i, int x, int y)
 {
     auto &r = rows[i];
+    if (r.style == Favorites && x >= clientWidth() - dpi(101) && x < clientWidth() - dpi(72))
+        return 2;
     if (r.style == Folder)
     {
         if (!folderBranch(r))

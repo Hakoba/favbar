@@ -38,6 +38,8 @@ std::deque<Event> events;
 HWND window;
 HWND timerDialog;
 HWND strataDialog;
+HWND folderSearch, queueDialog, filePreview;
+bool toolMessage(MSG &m);
 void refreshTimerTheme();
 HWND tipWindow;
 wstring tipText;
@@ -552,6 +554,20 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_KEYDOWN:
+        if (wp == 'K' && GetKeyState(VK_CONTROL) < 0)
+        {
+            event(17);
+            return 0;
+        }
+        if (wp == VK_SPACE)
+        {
+            int i = focus;
+            if ((i < 0 || i >= (int)rows.size() || rows[i].style != ShelfFile) && hover >= 0 &&
+                hover < (int)rows.size() && rows[hover].style == ShelfFile)
+                i = hover;
+            event(4, i, VK_SPACE);
+            return 0;
+        }
         if (wp == VK_PRIOR || wp == VK_NEXT)
         {
             scroll(top + (wp == VK_NEXT ? Layout().page : -Layout().page));
@@ -645,6 +661,9 @@ extern "C"
             refreshTimerTheme();
             if (strataDialog)
                 SendMessageW(strataDialog, WM_THEMECHANGED, 0, 0);
+            for (HWND h : {folderSearch, queueDialog, filePreview})
+                if (h)
+                    SendMessageW(h, WM_THEMECHANGED, 0, 0);
         }
         auto same = [](const Row &a, const Row &b) {
             return a.left == b.left && a.right == b.right && a.hint == b.hint && a.path == b.path &&
@@ -718,6 +737,8 @@ extern "C"
             if (timerDialog && IsDialogMessageW(timerDialog, &m))
                 continue;
             if (strataDialog && IsDialogMessageW(strataDialog, &m))
+                continue;
+            if (toolMessage(m))
                 continue;
             TranslateMessage(&m);
             DispatchMessageW(&m);
@@ -987,4 +1008,6 @@ extern "C"
 #include "strata.inc"
 #include "shutdown.inc"
 #include "icons.inc"
+#include "tool_windows.inc"
+#include "preview.inc"
 #include "metrics.inc"

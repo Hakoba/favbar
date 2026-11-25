@@ -20,6 +20,21 @@ extern "C" {
     fn ui_menu(items: *const MenuItem, n: i32) -> i32;
     fn ui_input(title: *const u16, initial: *const u16) -> *const u16;
     pub fn ui_shutdown_timer();
+    pub fn ui_queue_open();
+    pub fn ui_queue_visible() -> i32;
+    fn ui_queue_begin();
+    fn ui_queue_item(id: *const u16, title: *const u16, running: i32);
+    fn ui_queue_finish(online: i32);
+    fn ui_queue_notice(text: *const u16);
+    pub fn ui_search_begin();
+    fn ui_search_item(name: *const u16, path: *const u16);
+    pub fn ui_search_show();
+    pub fn ui_search_close();
+    fn ui_preview_file(path: *const u16);
+    fn ui_preview_matches(path: *const u16) -> i32;
+    fn preview_load(path: *const u16) -> *mut std::ffi::c_void;
+    fn preview_free(frame: *mut std::ffi::c_void);
+    fn ui_preview_apply(frame: *mut std::ffi::c_void);
     fn ui_pick(folder: i32) -> *const u16;
     fn ui_clip(value: *const u16, write: i32) -> *const u16;
     fn ui_explorer(dest: *const u16) -> *const u16;
@@ -165,6 +180,8 @@ pub fn menu(names: &[String]) -> Option<usize> {
                     (0xe9d9, false, false)
                 }
                 "Обновить даты (F5)" => (0xe72c, false, false),
+                "Быстрый переход…  Ctrl+K" => (0xe721, false, false),
+                "Предпросмотр  Space" => (0xe890, false, false),
                 "Сортировка: дата / имя" => (0xe8cb, false, false),
                 "Следующий монитор" | "Перенести на другой край" => {
                     (0xe7f4, false, false)
@@ -213,6 +230,60 @@ pub fn status(s: &str) {
 }
 pub fn tip(s: &str) {
     unsafe { ui_tip(wide(s).as_ptr()) }
+}
+pub fn queue_rows(snapshot: Option<&crate::jobs::QueueSnapshot>) {
+    if snapshot.is_some_and(|v| !v.detailed) {
+        return;
+    }
+    unsafe {
+        ui_queue_begin();
+    }
+    if let Some(q) = snapshot {
+        for e in &q.entries {
+            unsafe {
+                ui_queue_item(
+                    wide(&e.id).as_ptr(),
+                    wide(&e.title).as_ptr(),
+                    e.running.into(),
+                );
+            }
+        }
+    }
+    unsafe {
+        ui_queue_finish(snapshot.is_some().into());
+    }
+}
+pub fn queue_notice(s: &str) {
+    unsafe { ui_queue_notice(wide(s).as_ptr()) }
+}
+pub fn search_item(name: &str, path: &str) {
+    unsafe { ui_search_item(wide(name).as_ptr(), wide(path).as_ptr()) }
+}
+pub fn preview_file(path: &str) {
+    unsafe { ui_preview_file(wide(path).as_ptr()) }
+}
+pub fn preview_matches(path: &str) -> bool {
+    unsafe { ui_preview_matches(wide(path).as_ptr()) != 0 }
+}
+pub struct PreviewFrame(*mut std::ffi::c_void);
+// The decoder returns exclusively owned pixel bytes and text. COM interfaces stay on the decoder thread.
+unsafe impl Send for PreviewFrame {}
+impl PreviewFrame {
+    pub fn load(path: &str) -> Self {
+        Self(unsafe { preview_load(wide(path).as_ptr()) })
+    }
+    pub fn show(self) {
+        unsafe {
+            ui_preview_apply(self.0);
+        }
+    }
+}
+impl Drop for PreviewFrame {
+    fn drop(&mut self) {
+        unsafe {
+            preview_free(self.0);
+        }
+    }
 }
 pub fn monitor() -> (i32, i32) {
     let (mut x, mut y) = (0, 0);

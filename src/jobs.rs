@@ -14,7 +14,9 @@ use std::{
 pub type Dates = HashMap<String, u64>;
 pub enum Update {
     Dates(Dates),
-    Status(Vec<(String, bool)>, Option<(usize, usize, HashSet<String>)>),
+    Status(Vec<(String, bool)>, Option<String>, Option<QueueSnapshot>),
+    QueueCommand(String, bool),
+    Preview(String, crate::win::PreviewFrame),
     Message(String),
     GpuTip(String),
 }
@@ -186,22 +188,92 @@ pub fn children<'a>(
             Some(e.path().to_string_lossy().into_owned())
         })
 }
-pub fn probe(services: Vec<String>, comfy: Option<String>, tx: Sender<Update>) {
+#[derive(Debug)]
+pub struct QueueEntry {
+    pub id: String,
+    pub title: String,
+    pub running: bool,
+}
+pub struct QueueSnapshot {
+    pub detailed: bool,
+    running: usize,
+    waiting: usize,
+    ids: HashSet<String>,
+    pub entries: Vec<QueueEntry>,
+}
+fn queue_title(row: &J) -> String {
+    let extra = &row[3];
+    let workflow = &extra["extra_pnginfo"]["workflow"];
+    let output = row[4]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(J::as_str)
+        .filter_map(|id| row[2].get(id))
+        .find_map(|node| {
+            node["inputs"]["filename_prefix"]
+                .as_str()
+                .or_else(|| node["_meta"]["title"].as_str())
+                .or_else(|| node["class_type"].as_str())
+        });
+    [
+        extra["workflow_name"].as_str(),
+        workflow["name"].as_str(),
+        workflow["title"].as_str(),
+        output,
+    ]
+    .into_iter()
+    .flatten()
+    .find(|s| !s.trim().is_empty())
+    .map(|s| s.chars().take(180).collect())
+    .unwrap_or_else(|| format!("Задача {}", row[0]))
+}
+fn queue_snapshot(q: &J, details: bool) -> Option<QueueSnapshot> {
+    let running = q["queue_running"].as_array()?;
+    let waiting = q["queue_pending"].as_array()?;
+    let mut snapshot = QueueSnapshot {
+        detailed: details,
+        running: running.len(),
+        waiting: waiting.len(),
+        ids: HashSet::new(),
+        entries: vec![],
+    };
+    for (active, rows) in [(true, running), (false, waiting)] {
+        snapshot.ids.extend(
+            rows.iter()
+                .filter_map(|r| r.get(1)?.as_str().map(String::from)),
+        );
+        if !details {
+            continue;
+        }
+        let mut sorted: Vec<_> = rows.iter().collect();
+        if !active {
+            sorted.sort_by(|a, b| {
+                a[0].as_f64()
+                    .unwrap_or_default()
+                    .total_cmp(&b[0].as_f64().unwrap_or_default())
+            });
+        }
+        for row in sorted {
+            let Some(id) = row.get(1).and_then(J::as_str) else {
+                continue;
+            };
+            snapshot.entries.push(QueueEntry {
+                id: id.into(),
+                title: queue_title(row),
+                running: active,
+            });
+        }
+    }
+    Some(snapshot)
+}
+pub fn probe(services: Vec<String>, comfy: Option<String>, details: bool, tx: Sender<Update>) {
     thread::spawn(move || {
         let queue = comfy
+            .as_ref()
             .and_then(|base| win::http(&format!("{base}/queue"), None))
             .and_then(|v| serde_json::from_str::<J>(&v).ok())
-            .map(|q| {
-                let (r, p) = (list(&q, "queue_running"), list(&q, "queue_pending"));
-                (
-                    r.len(),
-                    p.len(),
-                    r.iter()
-                        .chain(p)
-                        .filter_map(|v| v.get(1)?.as_str().map(String::from))
-                        .collect(),
-                )
-            });
+            .and_then(|q| queue_snapshot(&q, details));
         let status = services
             .into_iter()
             .map(|url| {
@@ -217,7 +289,7 @@ pub fn probe(services: Vec<String>, comfy: Option<String>, tx: Sender<Update>) {
                 (url, up)
             })
             .collect();
-        send(&tx, Update::Status(status, queue));
+        send(&tx, Update::Status(status, comfy, queue));
     });
 }
 #[derive(Default)]
@@ -229,13 +301,14 @@ pub struct Queue {
     pub label: String,
 }
 impl Queue {
-    pub fn update(
-        &mut self,
-        value: Option<(usize, usize, HashSet<String>)>,
-        mode: &str,
-        minutes: u64,
-    ) {
-        let Some((run, wait, ids)) = value else {
+    pub fn update(&mut self, value: Option<QueueSnapshot>, mode: &str, minutes: u64) {
+        let Some(QueueSnapshot {
+            running: run,
+            waiting: wait,
+            ids,
+            ..
+        }) = value
+        else {
             *self = Self {
                 label: "выключен".into(),
                 ..Self::default()
@@ -328,4 +401,37 @@ pub fn queue_post(base: &str, path: &str, body: J, tx: Sender<Update>) {
             ),
         );
     });
+}
+pub fn cancel_waiting(base: String, id: String, tx: Sender<Update>) {
+    thread::spawn(move || {
+        let ok = win::http(
+            &format!("{base}/queue"),
+            Some(&serde_json::json!({"delete":[id]}).to_string()),
+        )
+        .is_some();
+        send(&tx, Update::QueueCommand(base, ok));
+    });
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn details_follow_execution_order_and_keep_prompt_ids() {
+        let value = json!({"queue_running":[[1,"live",{},{"workflow_name":"Current"},[]]],
+            "queue_pending":[[7,"last",{}, {}, []], [3,"first",{"9":{"inputs":{"filename_prefix":"Cover"}}},{},["9"]]]});
+        let q = queue_snapshot(&value, true).unwrap();
+        assert_eq!(
+            q.entries.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(),
+            ["live", "first", "last"]
+        );
+        assert!(q.entries[0].running);
+        assert_eq!(q.entries[1].title, "Cover");
+        assert!(!q.entries[1].running);
+        let summary = queue_snapshot(&value, false).unwrap();
+        assert_eq!(summary.ids, q.ids);
+        assert!(summary.entries.is_empty());
+        assert!(queue_snapshot(&json!({}), true).is_none());
+    }
 }
