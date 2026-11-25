@@ -91,8 +91,9 @@ void readVideo(const wchar_t *path, FileFrame &f)
     ComPtr<IMFSourceReader> reader;
     ComPtr<IMFMediaType> rgb, actual;
     constexpr DWORD stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM;
-    if (FAILED(mf.attributes(&attrs, 2)))
+    if (FAILED(mf.attributes(&attrs, 3)))
         return;
+    attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
     attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
     attrs->SetUINT32(MF_SOURCE_READER_DISABLE_DXVA, TRUE);
     if (FAILED(mf.open(path, attrs.Get(), &reader)) || FAILED(mf.type(&rgb)))
@@ -203,6 +204,8 @@ void drawFrame(DRAWITEMSTRUCT &d)
 }
 LRESULT CALLBACK filePreviewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_MOUSEACTIVATE)
+        return MA_NOACTIVATE;
     if (msg == WM_DRAWITEM && wp == PreviewCanvas)
     {
         drawFrame(*(DRAWITEMSTRUCT *)lp);
@@ -286,13 +289,15 @@ extern "C" void ui_preview_apply(FileFrame *f)
     EnableWindow(GetDlgItem(filePreview, PrimaryAction), displayed.exists);
     InvalidateRect(GetDlgItem(filePreview, PreviewCanvas), nullptr, FALSE);
 }
-extern "C" void ui_preview_file(const wchar_t *path)
+extern "C" int ui_preview_file(const wchar_t *path)
 {
+    if (!previewSpaceDown)
+        return 0;
     if (!filePreview)
     {
         HWND h = popupWindow(L"FavBarFilePreview", filePreviewProc, L"FavBar · Предпросмотр", 425, nullptr, 504);
         if (!h)
-            return;
+            return 0;
         filePreview = h;
         popupTitle(h, L"Предпросмотр");
         control(h, L"STATIC", L"", PreviewName, 20, 66, 464, 25, SS_ENDELLIPSIS | SS_NOPREFIX, bold);
@@ -307,6 +312,6 @@ extern "C" void ui_preview_file(const wchar_t *path)
     SetDlgItemTextW(filePreview, PreviewInfo, L"");
     EnableWindow(GetDlgItem(filePreview, PrimaryAction), FALSE);
     InvalidateRect(GetDlgItem(filePreview, PreviewCanvas), nullptr, FALSE);
-    ShowWindow(filePreview, SW_SHOW);
-    SetForegroundWindow(filePreview);
+    ShowWindow(filePreview, SW_SHOWNOACTIVATE);
+    return 1;
 }

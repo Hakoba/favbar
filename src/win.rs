@@ -30,7 +30,7 @@ extern "C" {
     fn ui_search_item(name: *const u16, path: *const u16);
     pub fn ui_search_show();
     pub fn ui_search_close();
-    fn ui_preview_file(path: *const u16);
+    fn ui_preview_file(path: *const u16) -> i32;
     fn ui_preview_matches(path: *const u16) -> i32;
     fn preview_load(path: *const u16) -> *mut std::ffi::c_void;
     fn preview_free(frame: *mut std::ffi::c_void);
@@ -181,7 +181,6 @@ pub fn menu(names: &[String]) -> Option<usize> {
                 }
                 "Обновить даты (F5)" => (0xe72c, false, false),
                 "Быстрый переход…  Ctrl+K" => (0xe721, false, false),
-                "Предпросмотр  Space" => (0xe890, false, false),
                 "Сортировка: дата / имя" => (0xe8cb, false, false),
                 "Следующий монитор" | "Перенести на другой край" => {
                     (0xe7f4, false, false)
@@ -259,8 +258,8 @@ pub fn queue_notice(s: &str) {
 pub fn search_item(name: &str, path: &str) {
     unsafe { ui_search_item(wide(name).as_ptr(), wide(path).as_ptr()) }
 }
-pub fn preview_file(path: &str) {
-    unsafe { ui_preview_file(wide(path).as_ptr()) }
+pub fn preview_file(path: &str) -> bool {
+    unsafe { ui_preview_file(wide(path).as_ptr()) != 0 }
 }
 pub fn preview_matches(path: &str) -> bool {
     unsafe { ui_preview_matches(wide(path).as_ptr()) != 0 }

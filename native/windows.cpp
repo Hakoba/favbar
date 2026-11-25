@@ -39,6 +39,18 @@ HWND window;
 HWND timerDialog;
 HWND strataDialog;
 HWND folderSearch, queueDialog, filePreview;
+bool previewSpaceDown = false;
+wstring heldPreviewPath;
+constexpr UINT_PTR previewHoldTimer = 2;
+void endPreviewHold()
+{
+    if (previewSpaceDown)
+        KillTimer(window, previewHoldTimer);
+    previewSpaceDown = false;
+    heldPreviewPath.clear();
+    if (filePreview)
+        DestroyWindow(filePreview);
+}
 bool toolMessage(MSG &m);
 void refreshTimerTheme();
 HWND tipWindow;
@@ -116,6 +128,7 @@ void display(bool show)
     }
     else
     {
+        endPreviewHold();
         if (registered)
             SHAppBarMessage(ABM_REMOVE, &b);
         registered = false;
@@ -379,6 +392,13 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         event(9);
         return 0;
     case WM_TIMER:
+        if (wp == previewHoldTimer)
+        {
+            KillTimer(h, previewHoldTimer);
+            if (previewSpaceDown && !heldPreviewPath.empty())
+                event(23, -1, 0, std::move(heldPreviewPath));
+            return 0;
+        }
         event(5);
         return 0;
     case WM_SETTINGCHANGE:
@@ -553,6 +573,21 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         event(msg == WM_RBUTTONUP ? 2 : 3, i, i >= 0 ? side(i, x, GET_Y_LPARAM(lp)) : 0);
         return 0;
     }
+    case WM_ACTIVATEAPP:
+        if (!wp)
+            endPreviewHold();
+        break;
+    case WM_KILLFOCUS:
+        if (!filePreview || ((HWND)wp != filePreview && !IsChild(filePreview, (HWND)wp)))
+            endPreviewHold();
+        break;
+    case WM_KEYUP:
+        if (wp == VK_SPACE)
+        {
+            endPreviewHold();
+            return 0;
+        }
+        break;
     case WM_KEYDOWN:
         if (wp == 'K' && GetKeyState(VK_CONTROL) < 0)
         {
@@ -561,11 +596,24 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (wp == VK_SPACE)
         {
+            if (previewSpaceDown || (lp & (1L << 30)))
+                return 0;
             int i = focus;
             if ((i < 0 || i >= (int)rows.size() || rows[i].style != ShelfFile) && hover >= 0 &&
                 hover < (int)rows.size() && rows[hover].style == ShelfFile)
                 i = hover;
-            event(4, i, VK_SPACE);
+            if (i >= 0 && i < (int)rows.size() && rows[i].style == ShelfFile)
+            {
+                previewSpaceDown = true;
+                heldPreviewPath = rows[i].path;
+                if (!SetTimer(h, previewHoldTimer, 150, nullptr))
+                    event(23, -1, 0, std::move(heldPreviewPath));
+            }
+            return 0;
+        }
+        if (wp == VK_ESCAPE && previewSpaceDown)
+        {
+            endPreviewHold();
             return 0;
         }
         if (wp == VK_PRIOR || wp == VK_NEXT)
@@ -734,6 +782,11 @@ extern "C"
         {
             if (GetMessageW(&m, nullptr, 0, 0) <= 0)
                 return 0;
+            if (previewSpaceDown && (m.message == WM_KEYUP || m.message == WM_SYSKEYUP) && m.wParam == VK_SPACE)
+            {
+                endPreviewHold();
+                continue;
+            }
             if (timerDialog && IsDialogMessageW(timerDialog, &m))
                 continue;
             if (strataDialog && IsDialogMessageW(strataDialog, &m))
