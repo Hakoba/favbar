@@ -282,6 +282,16 @@ class Target final : public IDropTarget
         return S_OK;
     }
 };
+struct MenuItem
+{
+    const wchar_t *label;
+    int glyph, groupStart, destructive;
+};
+struct MenuEntry
+{
+    MenuItem item;
+    int top, bottom, gutter;
+};
 LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg)
@@ -295,13 +305,14 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             break;
         HDC dc = GetDC(h);
         auto prev = SelectObject(dc, font);
-        auto title = reinterpret_cast<const wchar_t *>(item->itemData);
+        const auto &entry = *reinterpret_cast<const MenuEntry *>(item->itemData);
+        auto title = entry.item.label;
         SIZE size{};
         GetTextExtentPoint32W(dc, title, (int)wcslen(title), &size);
         SelectObject(dc, prev);
         ReleaseDC(h, dc);
-        item->itemWidth = std::clamp((int)size.cx + dpi(26), dpi(140), dpi(520));
-        item->itemHeight = dpi(27);
+        item->itemWidth = std::clamp((int)size.cx + dpi(32 + entry.gutter), dpi(154), dpi(540));
+        item->itemHeight = dpi(32 + entry.top + entry.bottom);
         return TRUE;
     }
     case WM_DRAWITEM: {
@@ -309,16 +320,33 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (item->CtlType != ODT_MENU || !item->itemData)
             break;
         RECT rect = item->rcItem;
+        const auto &entry = *reinterpret_cast<const MenuEntry *>(item->itemData);
+        int saved = SaveDC(item->hDC);
         bool hot = (item->itemState & ODS_SELECTED) != 0;
         fill(item->hDC, rect, surface);
+        if (entry.item.groupStart && entry.top == 9)
+        {
+            int y = rect.top + dpi(4);
+            fill(item->hDC, {rect.left + dpi(12), y, rect.right - dpi(12), y + 1}, border);
+        }
+        rect.top += dpi(entry.top);
+        rect.bottom -= dpi(entry.bottom);
         if (hot)
         {
-            InflateRect(&rect, -dpi(3), -dpi(1));
-            box(item->hDC, rect, hoverFill, border, 4);
+            RECT highlight = rect;
+            InflateRect(&highlight, -dpi(4), -dpi(1));
+            box(item->hDC, highlight, hoverFill, hoverFill, 6);
         }
-        rect.left += dpi(12);
-        rect.right -= dpi(8);
-        textAt(item->hDC, rect, reinterpret_cast<const wchar_t *>(item->itemData), hot ? accent : fg, font);
+        COLORREF ink = entry.item.destructive ? (dark ? RGB(247, 164, 146) : RGB(148, 56, 43)) : fg;
+        if (entry.item.glyph)
+            icon(item->hDC, {rect.left + dpi(11), rect.top, rect.left + dpi(31), rect.bottom}, entry.item.glyph,
+                 entry.item.destructive ? ink
+                 : hot                  ? mint
+                                        : muted);
+        rect.left += dpi(13 + entry.gutter);
+        rect.right -= dpi(12);
+        textAt(item->hDC, rect, entry.item.label, ink, font);
+        RestoreDC(item->hDC, saved);
         return TRUE;
     }
     case WM_ERASEBKGND:
@@ -386,10 +414,9 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_MOUSELEAVE:
-        hover = -1;
+        setHover(-1, 0);
         if (tipWindow)
             SendMessageW(tipWindow, TTM_TRACKACTIVATE, FALSE, (LPARAM)&tipInfo);
-        InvalidateRect(h, nullptr, FALSE);
         return 0;
     case WM_MOUSEMOVE: {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp), i = hit(y);
@@ -420,7 +447,7 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             dragFile(path);
             return 0;
         }
-        int cell = i < 0 ? 0 : side(i, x);
+        int cell = i < 0 ? 0 : side(i, x, y);
         if (hover != i || cell != hoverSide)
         {
             if (tipWindow)
@@ -431,15 +458,13 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 TrackMouseEvent(&request);
             }
             bool enter = hover < 0;
-            hover = i;
-            hoverSide = cell;
+            setHover(i, cell);
             if (enter)
             {
                 TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0};
                 TrackMouseEvent(&t);
                 event(11);
             }
-            InvalidateRect(h, nullptr, FALSE);
         }
         return 0;
     }
@@ -508,8 +533,8 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         int x = GET_X_LPARAM(lp), i = hit(GET_Y_LPARAM(lp));
         if (i >= 0 && i == startRow && !dragging)
         {
-            focus = i;
-            event(1, i, side(i, x));
+            setFocusRow(i);
+            event(1, i, side(i, x, GET_Y_LPARAM(lp)));
         }
         startRow = -1;
         return 0;
@@ -517,8 +542,8 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MBUTTONUP:
     case WM_RBUTTONUP: {
         int x = GET_X_LPARAM(lp), i = hit(GET_Y_LPARAM(lp));
-        focus = i;
-        event(msg == WM_RBUTTONUP ? 2 : 3, i, i >= 0 ? side(i, x) : 0);
+        setFocusRow(i);
+        event(msg == WM_RBUTTONUP ? 2 : 3, i, i >= 0 ? side(i, x, GET_Y_LPARAM(lp)) : 0);
         return 0;
     }
     case WM_KEYDOWN:
@@ -615,19 +640,34 @@ extern "C"
                    a.style == b.style && a.depth == b.depth && a.leftDetail == b.leftDetail &&
                    a.rightDetail == b.rightDetail;
         };
-        bool changed = previous != bg || rows.size() != nextRows.size() ||
-                       !std::equal(rows.begin(), rows.end(), nextRows.begin(), nextRows.end(), same);
-        if (!changed)
+        bool relayout = previous != bg || rows.size() != nextRows.size() ||
+                        !std::equal(rows.begin(), rows.end(), nextRows.begin(),
+                                    [](const Row &a, const Row &b) { return a.style == b.style; });
+        if (!relayout && std::equal(rows.begin(), rows.end(), nextRows.begin(), same))
             return;
+        wstring oldHint = footerText();
         rows.swap(nextRows);
         focus = std::min(focus, (int)rows.size() - 1);
         hover = std::min(hover, (int)rows.size() - 1);
-        scroll(top);
+        if (relayout)
+            scroll(top);
+        else
+        {
+            Layout layout;
+            for (auto &band : layout.bands)
+                if (!same(rows[band.index], nextRows[band.index]))
+                    invalidateBand(layout, band.index);
+            if (oldHint != footerText())
+                invalidateFooter();
+        }
     }
     void ui_status(const wchar_t *s)
     {
-        status = s;
-        InvalidateRect(window, nullptr, FALSE);
+        if (status != s)
+        {
+            status = s;
+            invalidateFooter();
+        }
     }
     void ui_edge(int right)
     {
@@ -684,6 +724,7 @@ extern "C"
         if (tipWindow)
             DestroyWindow(tipWindow);
         DestroyWindow(window);
+        paintBuffer.reset();
         fonts(false);
         OleUninitialize();
     }
@@ -729,22 +770,29 @@ extern "C"
                 std::clamp(x, (int)mi.rcWork.left, std::max((int)mi.rcWork.left, (int)mi.rcWork.right - tw)),
                 std::clamp((int)p.y, (int)mi.rcWork.top, std::max((int)mi.rcWork.top, (int)mi.rcWork.bottom - th))));
     }
-    int ui_menu(const wchar_t **labels, int n)
+    int ui_menu(const MenuItem *items, int n)
     {
+        if (n <= 0)
+            return -1;
         auto m = CreatePopupMenu();
         auto brush = CreateSolidBrush(surface);
         MENUINFO appearance{sizeof(appearance)};
-        appearance.fMask = MIM_BACKGROUND;
+        appearance.fMask = MIM_BACKGROUND | MIM_STYLE;
+        appearance.dwStyle = MNS_NOCHECK;
         appearance.hbrBack = brush;
         SetMenuInfo(m, &appearance);
+        int gutter = std::any_of(items, items + n, [](const MenuItem &item) { return item.glyph != 0; }) ? 25 : 0;
+        std::vector<MenuEntry> entries;
+        entries.reserve(n);
         for (int i = 0; i < n; i++)
         {
+            entries.push_back({items[i], !i ? 4 : items[i].groupStart ? 9 : 0, i == n - 1 ? 4 : 0, gutter});
             MENUITEMINFOW item{sizeof(item)};
             item.fMask = MIIM_FTYPE | MIIM_STRING | MIIM_ID | MIIM_DATA;
             item.fType = MFT_OWNERDRAW;
             item.wID = i + 1;
-            item.dwTypeData = const_cast<wchar_t *>(labels[i]);
-            item.dwItemData = (ULONG_PTR)labels[i];
+            item.dwTypeData = const_cast<wchar_t *>(items[i].label);
+            item.dwItemData = (ULONG_PTR)&entries.back();
             InsertMenuItemW(m, i, TRUE, &item);
         }
         POINT p;

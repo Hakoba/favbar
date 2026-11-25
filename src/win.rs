@@ -17,7 +17,7 @@ extern "C" {
         right_detail: i32,
     );
     fn ui_finish(theme: i32);
-    fn ui_menu(labels: *const *const u16, n: i32) -> i32;
+    fn ui_menu(items: *const MenuItem, n: i32) -> i32;
     fn ui_input(title: *const u16, initial: *const u16) -> *const u16;
     fn ui_pick(folder: i32) -> *const u16;
     fn ui_clip(value: *const u16, write: i32) -> *const u16;
@@ -120,10 +120,69 @@ pub fn finish(theme: &str) {
         })
     }
 }
+#[repr(C)]
+struct MenuItem {
+    label: *const u16,
+    glyph: i32,
+    group_start: i32,
+    destructive: i32,
+}
 pub fn menu(names: &[String]) -> Option<usize> {
     let values: Vec<_> = names.iter().map(|s| wide(s)).collect();
-    let ptrs: Vec<_> = values.iter().map(|s| s.as_ptr()).collect();
-    usize::try_from(unsafe { ui_menu(ptrs.as_ptr(), ptrs.len() as i32) }).ok()
+    let items: Vec<_> = names
+        .iter()
+        .zip(&values)
+        .map(|(name, label)| {
+            let (glyph, group_start, destructive) = match name.as_str() {
+                "Открыть в новом окне" | "Открыть" | "Открыть ComfyUI" | "Открыть в Студии" => {
+                    (0xe8a7, false, false)
+                }
+                "Терминал здесь" => (0xe756, false, false),
+                "Копировать путь" | "Копировать URL" => {
+                    (0xe8c8, false, false)
+                }
+                "Значок папки" | "Тема" => (0xe790, true, false),
+                "Переименовать" => (0xe8ac, false, false),
+                "Выше" => (0xe74a, false, false),
+                "Ниже" => (0xe74b, false, false),
+                "Домашняя папка" => (0xe80f, false, false),
+                "Добавить в избранное" => (0xe734, false, false),
+                "Убрать из избранного"
+                | "Очистить полку"
+                | "Убрать с полки"
+                | "Очистить ожидающие…" => (0xe74d, true, true),
+                "Прервать текущую задачу…" => (0xe71a, true, true),
+                "Показать в папке" | "Папка профиля" => {
+                    (0xe8b7, false, false)
+                }
+                "Добавить файлы" | "Добавить папку…" => {
+                    (0xe710, false, false)
+                }
+                "Скрыть" | "Скрыть сервис" => (0xed1a, false, false),
+                "Уведомления" => (0xea8f, false, false),
+                "Показатели" | "Освободить память" | "Выгрузить модели LM Studio" => {
+                    (0xe9d9, false, false)
+                }
+                "Обновить даты (F5)" => (0xe72c, false, false),
+                "Сортировка: дата / имя" => (0xe8cb, false, false),
+                "Следующий монитор" | "Перенести на другой край" => {
+                    (0xe7f4, false, false)
+                }
+                "Показать скрытые сервисы" => (0xe890, false, false),
+                "Открыть config.json" => (0xe713, true, false),
+                "Справка (F1)" => (0xe897, false, false),
+                "Выход" => (0xe8bb, true, false),
+                _ => (0, false, false),
+            };
+            MenuItem {
+                label: label.as_ptr(),
+                glyph,
+                group_start: group_start.into(),
+                destructive: destructive.into(),
+            }
+        })
+        .collect();
+    usize::try_from(unsafe { ui_menu(items.as_ptr(), items.len() as i32) }).ok()
 }
 pub fn input(title: &str, initial: &str) -> String {
     unsafe { copy(ui_input(wide(title).as_ptr(), wide(initial).as_ptr())) }

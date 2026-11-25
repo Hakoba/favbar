@@ -77,12 +77,16 @@ impl Row {
         self
     }
 }
+enum Directory {
+    Branch,
+    Listed(Vec<String>),
+}
 pub struct App {
     pub profile: Profile,
     rows: Vec<Row>,
     selected: String,
     dates: Dates,
-    dirs: HashMap<String, Vec<String>>,
+    dirs: HashMap<String, Directory>,
     tx: Sender<Update>,
     rx: Receiver<Update>,
     scanning: bool,
@@ -166,18 +170,62 @@ impl App {
             .filter(|&v| v != 0)
             .map(win::date)
             .unwrap_or_default();
+        // A closed branch only needs its first visible child. Keep that answer across redraws.
+        let read = |all: bool| {
+            let patterns = jobs::patterns(cfg);
+            let excluded = jobs::exclusions(cfg);
+            let mut entries = jobs::children(
+                &path,
+                &patterns,
+                flag(cfg, "hide_dot_folders", true),
+                &excluded,
+            );
+            if all {
+                Directory::Listed(entries.collect())
+            } else if entries.next().is_some() {
+                Directory::Branch
+            } else {
+                Directory::Listed(vec![])
+            }
+        };
+        let directory = self
+            .dirs
+            .entry(key(&path))
+            .or_insert_with(|| read(open && depth < 64));
+        if open && depth < 64 && matches!(directory, Directory::Branch) {
+            *directory = read(true);
+        }
+        let branch = depth < 64
+            && match directory {
+                Directory::Branch => true,
+                Directory::Listed(children) => !children.is_empty(),
+            };
+        let navigate = Action::Folder {
+            root,
+            path: path.clone(),
+        };
         let mut r = Row::new(
             format!("{}{}", if home { "⌂ " } else { "" }, label),
-            Action::Folder {
-                root,
-                path: path.clone(),
-            },
+            navigate.clone(),
         )
         .right(
-            format!("{}  {date}", if open { "▾" } else { "▸" }),
-            Action::Expand {
-                root,
-                path: path.clone(),
+            format!(
+                "{}  {date}",
+                if !branch {
+                    ""
+                } else if open {
+                    "▾"
+                } else {
+                    "▸"
+                }
+            ),
+            if branch {
+                Action::Expand {
+                    root,
+                    path: path.clone(),
+                }
+            } else {
+                navigate
             },
         )
         .hint(&path)
@@ -188,14 +236,9 @@ impl App {
         if !open || depth >= 64 {
             return;
         }
-        let children = self.dirs.entry(key(&path)).or_insert_with(|| {
-            jobs::children(
-                &path,
-                &jobs::patterns(cfg),
-                flag(cfg, "hide_dot_folders", true),
-                &jobs::exclusions(cfg),
-            )
-        });
+        let Directory::Listed(children) = directory else {
+            return;
+        };
         let by_date = s(&self.profile.state, "sort", "date") == "date";
         children.sort_by_cached_key(|v| {
             (
@@ -1065,6 +1108,44 @@ fn button_glyph(b: &J) -> i32 {
 fn choose(labels: &[&str]) -> Option<usize> {
     win::menu(&labels.iter().map(|s| s.to_string()).collect::<Vec<_>>())
 }
+
 fn help() {
-    win::message("FavBar\n\nИмя папки открывает её в последнем окне Проводника. Стрелка справа раскрывает ветку. Средняя кнопка открывает новое окно. Правый клик показывает действия.\n\nПеретащите файлы на полку или с полки в другое окно. Ссылку можно перетащить на строку закладок или вставить из буфера.\n\nСтрелки клавиатуры выбирают строку. Enter нажимает слева, Shift+Enter справа. F5 обновляет даты. Потяните внутренний край панели, чтобы изменить ширину.",false);
+    win::message("FavBar\n\nНажмите значок или название папки, чтобы открыть её в Проводнике. Клик по остальной строке раскрывает или сворачивает ветку. Папку без видимых подпапок можно открыть по всей строке. Средняя кнопка открывает новое окно. Правый клик показывает действия.\n\nПеретащите файлы на полку или с полки в другое окно. Ссылку можно перетащить на строку закладок или вставить из буфера.\n\nСтрелки клавиатуры выбирают строку. Enter нажимает слева, Shift+Enter справа. F5 обновляет даты. Потяните внутренний край панели, чтобы изменить ширину.",false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn folder_actions_follow_visible_children() {
+        let temp =
+            std::env::temp_dir().join(format!("favbar-folder-actions-{}", std::process::id()));
+        let root = temp.join("root");
+        let leaf = root.join("leaf");
+        fs::create_dir_all(leaf.join(".hidden")).unwrap();
+        fs::create_dir(leaf.join("ignored")).unwrap();
+        fs::write(leaf.join("file.txt"), b"").unwrap();
+        let mut profile = Profile::load(temp.clone(), None).unwrap();
+        profile.cfg =
+            json!({"favorites":[{"path":root}], "skip":["ignored"], "hide_dot_folders":true});
+        let mut app = App::new(profile, true);
+        let root = root.to_str().unwrap();
+        app.folder(0, root.into(), "root".into(), 0);
+        assert!(matches!(
+            app.rows[0].actions,
+            [Action::Folder { .. }, Action::Expand { .. }]
+        ));
+        app.profile
+            .toggle("expanded", &format!("{}|{}", key(root), key(root)));
+        app.rows.clear();
+        app.folder(0, root.into(), "root".into(), 0);
+        assert_eq!(app.rows.len(), 2);
+        assert!(
+            matches!(&app.rows[1].actions, [Action::Folder {path:a,..}, Action::Folder {path:b,..}] if a == b && Path::new(a) == leaf)
+        );
+        assert!(!app.rows[1].right.contains('▸'));
+        fs::remove_dir_all(temp).unwrap();
+    }
 }

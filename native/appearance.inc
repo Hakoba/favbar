@@ -150,6 +150,59 @@ struct Layout
         return {0, begin, width, std::min(end, (int)client.bottom - footer())};
     }
 };
+RECT footerRect()
+{
+    RECT r{};
+    GetClientRect(window, &r);
+    r.top = std::max(0L, r.bottom - footer());
+    return r;
+}
+void invalidateFooter()
+{
+    auto r = footerRect();
+    InvalidateRect(window, &r, FALSE);
+}
+void invalidateBand(const Layout &layout, int index)
+{
+    if (index < 0 || index >= (int)layout.bands.size())
+        return;
+    auto r = layout.clip(layout.bands[index], clientWidth());
+    if (!IsRectEmpty(&r))
+        InvalidateRect(window, &r, FALSE);
+}
+const wstring &footerText()
+{
+    if (!status.empty() || rows.empty())
+        return status;
+    if (hover >= 0 && hover < (int)rows.size() && !rows[hover].hint.empty())
+        return rows[hover].hint;
+    return rows.front().hint;
+}
+void setHover(int index, int cell)
+{
+    if (index == hover && cell == hoverSide)
+        return;
+    Layout layout;
+    int previous = hover;
+    const auto &oldHint = footerText();
+    hover = index;
+    hoverSide = cell;
+    invalidateBand(layout, previous);
+    if (previous != index)
+        invalidateBand(layout, index);
+    if (oldHint != footerText())
+        invalidateFooter();
+}
+void setFocusRow(int index)
+{
+    if (index != focus)
+    {
+        Layout layout;
+        invalidateBand(layout, focus);
+        focus = index;
+        invalidateBand(layout, focus);
+    }
+}
 struct ScrollThumb
 {
     int y, height, track, length, range, x;
@@ -245,6 +298,16 @@ int split(const Row &r, int w)
         return r.right.empty() ? w : w / 2;
     }
 }
+RECT folderContent(const Row &r, int w, int y, int bottom)
+{
+    int div = split(r, w), margin = dpi(12);
+    int indent = std::min(dpi(12) * r.depth, std::max(0, div - margin - dpi(70)));
+    return {margin + dpi(3) + indent, y, div - dpi(3), bottom};
+}
+bool folderBranch(const Row &r)
+{
+    return !r.right.empty() && (r.right.front() == L'▾' || r.right.front() == L'▸');
+}
 void tile(HDC dc, RECT r, const wstring &s, int glyph, bool over, bool featured)
 {
     r.top += dpi(2);
@@ -336,16 +399,17 @@ void drawBand(HDC dc, const Layout::Band &band, int w)
                 : home ? goldWash
                        : surface,
                 5);
-        int indent = std::min(dpi(12) * r.depth, std::max(0, div - margin - dpi(70)));
-        RECT l{margin + dpi(3) + indent, y, div - dpi(3), end};
+        RECT l = folderContent(r, w, y, end);
         if (r.depth)
             fill(dc, {l.left - dpi(6), y + dpi(2), l.left - dpi(6) + 1, end - dpi(2)}, border);
         folder_icon(dc, l, r.path);
-        textAt(dc, l, home ? r.left.substr(2) : r.left, fg, font);
+        textAt(dc, l, home ? r.left.substr(2) : r.left, over && !hoverSide ? mint : fg, font);
         auto off = r.right.find(L' ');
         if (off != wstring::npos)
             textAt(dc, {div, y, w - margin - dpi(16), end}, r.right.substr(off + 1), muted, smallFont, DT_RIGHT);
-        icon(dc, {w - margin - dpi(13), y, w - margin + dpi(2), end}, r.right[0] == L'▾' ? 0xe70d : 0xe76c, muted);
+        if (folderBranch(r))
+            icon(dc, {w - margin - dpi(13), y, w - margin + dpi(2), end}, r.right[0] == L'▾' ? 0xe70d : 0xe76c,
+                 over && hoverSide ? mint : muted);
         break;
     }
     case Pocket:
@@ -402,42 +466,102 @@ void drawBand(HDC dc, const Layout::Band &band, int w)
         break;
     }
 }
-void paint()
+struct PaintBuffer
 {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(window, &ps);
-    RECT client{};
-    GetClientRect(window, &client);
-    int w = client.right;
+    HDC dc{};
+    HBITMAP bitmap{};
+    HGDIOBJ original{};
+    int width{}, height{};
+    void reset()
+    {
+        if (original)
+            SelectObject(dc, original);
+        if (bitmap)
+            DeleteObject(bitmap);
+        if (dc)
+            DeleteDC(dc);
+        *this = {};
+    }
+    HDC acquire(HDC target, int w, int h)
+    {
+        if (dc && w == width && h == height)
+            return dc;
+        reset();
+        dc = CreateCompatibleDC(target);
+        if (dc)
+            bitmap = CreateCompatibleBitmap(target, w, h);
+        if (bitmap)
+            original = SelectObject(dc, bitmap);
+        if (!original)
+        {
+            reset();
+            return nullptr;
+        }
+        width = w;
+        height = h;
+        return dc;
+    }
+} paintBuffer;
+void drawPanel(HDC dc, RECT dirty)
+{
+    int w = clientWidth();
     Layout layout;
-    fill(dc, ps.rcPaint, bg);
+    fill(dc, dirty, bg);
     for (auto &b : layout.bands)
     {
         RECT clip = layout.clip(b, w), area{};
-        if (!IntersectRect(&area, &clip, &ps.rcPaint))
+        if (!IntersectRect(&area, &clip, &dirty) || !RectVisible(dc, &area))
             continue;
         int saved = SaveDC(dc);
         IntersectClipRect(dc, area.left, area.top, area.right, area.bottom);
         drawBand(dc, b, w);
         RestoreDC(dc, saved);
     }
-    RECT foot{0, client.bottom - footer(), w, client.bottom};
-    fill(dc, foot, surface);
-    fill(dc, {0, foot.top, w, foot.top + 1}, border);
-    wstring hint = status;
-    if (hint.empty() && hover >= 0 && hover < (int)rows.size())
-        hint = rows[hover].hint;
-    if (hint.empty() && !rows.empty())
-        hint = rows[0].hint;
-    icon(dc, {dpi(9), foot.top, dpi(27), foot.bottom}, 0xe765, muted);
-    textAt(dc, {dpi(32), foot.top, w - dpi(9), foot.bottom}, hint, muted, smallFont);
+    RECT foot = footerRect();
+    if (RectVisible(dc, &foot))
+    {
+        fill(dc, foot, surface);
+        fill(dc, {0, foot.top, w, foot.top + 1}, border);
+        icon(dc, {dpi(9), foot.top, dpi(27), foot.bottom}, 0xe765, muted);
+        textAt(dc, {dpi(32), foot.top, w - dpi(9), foot.bottom}, footerText(), muted, smallFont);
+    }
     ScrollThumb thumb(layout);
     if (thumb.range)
     {
         fill(dc, {thumb.x, thumb.track, thumb.x + dpi(2), thumb.track + thumb.length}, border);
         fill(dc, {thumb.x, thumb.y, thumb.x + dpi(2), thumb.y + thumb.height}, scrollbarGrab >= 0 ? accent : muted);
     }
+}
+void paint()
+{
+    // BeginPaint validates the update region. Keep its disjoint strips for the memory DC.
+    HRGN damage = CreateRectRgn(0, 0, 0, 0);
+    int regionType = damage ? GetUpdateRgn(window, damage, FALSE) : ERROR;
+    PAINTSTRUCT ps{};
+    HDC target = BeginPaint(window, &ps);
+    if (target && !IsRectEmpty(&ps.rcPaint))
+    {
+        RECT r{};
+        GetClientRect(window, &r);
+        HDC buffer = paintBuffer.acquire(target, r.right, r.bottom);
+        if (buffer)
+        {
+            int saved = SaveDC(buffer);
+            if (regionType > NULLREGION)
+                SelectClipRgn(buffer, damage);
+            else
+                IntersectClipRect(buffer, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right, ps.rcPaint.bottom);
+            drawPanel(buffer, ps.rcPaint);
+            RestoreDC(buffer, saved);
+            auto &p = ps.rcPaint;
+            BitBlt(target, p.left, p.top, p.right - p.left, p.bottom - p.top, buffer, p.left, p.top, SRCCOPY);
+        }
+        else
+            drawPanel(target, ps.rcPaint);
+    }
     EndPaint(window, &ps);
+    if (damage)
+        DeleteObject(damage);
 }
 int hit(int y)
 {
@@ -450,9 +574,32 @@ int hit(int y)
     }
     return -1;
 }
-int side(int i, int x)
+int side(int i, int x, int y)
 {
     auto &r = rows[i];
+    if (r.style == Folder)
+    {
+        if (!folderBranch(r))
+            return 0;
+        auto b = Layout().bands[i];
+        auto content = folderContent(r, clientWidth(), b.y, b.bottom);
+        int mid = (b.y + b.bottom) / 2;
+        RECT glyph{content.left, mid - dpi(8), content.left + dpi(16), mid + dpi(8)};
+        if (PtInRect(&glyph, {x, y}))
+            return 0;
+        HDC dc = GetDC(window);
+        auto previous = SelectObject(dc, font);
+        const wchar_t *label = r.left.c_str() + (r.left.rfind(L"⌂ ", 0) == 0 ? 2 : 0);
+        SIZE extent{};
+        GetTextExtentPoint32W(dc, label, (int)wcslen(label), &extent);
+        SelectObject(dc, previous);
+        ReleaseDC(window, dc);
+        content.left += dpi(20);
+        content.right = std::min(content.right, content.left + extent.cx);
+        content.top = mid - extent.cy / 2;
+        content.bottom = content.top + extent.cy;
+        return !PtInRect(&content, {x, y});
+    }
     int cut = split(r, clientWidth());
     if (r.style == Shelf && r.left.find(L"(0)") == wstring::npos && x >= cut - dpi(27) && x < cut)
         return 2;

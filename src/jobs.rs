@@ -159,20 +159,19 @@ pub fn scan(cfg: &J, state: &J, tx: Sender<Update>) {
         send(&tx, Update::Dates(dates));
     });
 }
-pub fn children(
+pub fn children<'a>(
     path: &str,
-    patterns: &[glob::Pattern],
+    patterns: &'a [glob::Pattern],
     dot: bool,
-    exclusions: &[PathBuf],
-) -> Vec<String> {
-    if excluded(Path::new(path), exclusions) {
-        return vec![];
-    }
-    fs::read_dir(path)
+    exclusions: &'a [PathBuf],
+) -> impl Iterator<Item = String> + 'a {
+    (!excluded(Path::new(path), exclusions))
+        .then(|| fs::read_dir(path).ok())
+        .flatten()
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| {
+        .filter_map(move |e| {
             let n = e.file_name();
             if excluded(&e.path(), exclusions) {
                 return None;
@@ -186,7 +185,6 @@ pub fn children(
             }
             Some(e.path().to_string_lossy().into_owned())
         })
-        .collect()
 }
 pub fn probe(services: Vec<String>, comfy: Option<String>, tx: Sender<Update>) {
     thread::spawn(move || {
