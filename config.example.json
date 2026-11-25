@@ -1,0 +1,8 @@
+{
+  "favorites": [{"name": "Documents", "path": "%USERPROFILE%\\Documents", "home": true}],
+  "buttons": [{"name": "Notepad", "group": "Tools", "cmd": "notepad.exe"}],
+  "services": [],
+  "hotkey": "Win+Shift+F",
+  "skip": [".git", "node_modules", "target"],
+  "hide_dot_folders": true
+}

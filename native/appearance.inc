@@ -1,0 +1,460 @@
+// Sidebar geometry is shared by painting, keyboard navigation, scrolling and drop targets.
+enum Style
+{
+    Tile,
+    Section,
+    Folder,
+    Shelf,
+    ShelfFile,
+    Pocket,
+    Brand,
+    Favorites,
+    Group,
+    Service,
+    Meter,
+    QueueLine,
+    System
+};
+HFONT smallFont{}, captionFont{}, symbolFont{}, brandFont{}, metricFont{};
+COLORREF muted, border, hoverFill, mint, goldWash;
+int hoverSide = 0;
+void colors()
+{
+    bg = dark ? RGB(21, 26, 26) : RGB(246, 246, 240);
+    surface = dark ? RGB(32, 39, 38) : RGB(255, 255, 251);
+    fg = dark ? RGB(238, 239, 230) : RGB(33, 44, 39);
+    accent = dark ? RGB(229, 196, 144) : RGB(124, 83, 31);
+    mint = dark ? RGB(124, 203, 173) : RGB(39, 121, 94);
+    muted = dark ? RGB(155, 169, 160) : RGB(89, 103, 95);
+    border = dark ? RGB(53, 65, 59) : RGB(211, 218, 206);
+    goldWash = dark ? RGB(49, 46, 36) : RGB(242, 234, 209);
+    hoverFill = dark ? RGB(47, 59, 52) : RGB(228, 237, 225);
+}
+HFONT typeface(int size, int weight, const wchar_t *family)
+{
+    return CreateFontW(-dpi(size), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       CLEARTYPE_QUALITY, DEFAULT_PITCH, family);
+}
+void fonts(bool create)
+{
+    for (auto f : {font, bold, smallFont, captionFont, symbolFont, brandFont, metricFont})
+        if (f)
+            DeleteObject(f);
+    if (!create)
+        return;
+    font = typeface(13, FW_NORMAL, L"Segoe UI");
+    bold = typeface(15, FW_SEMIBOLD, L"Segoe UI");
+    smallFont = typeface(11, FW_NORMAL, L"Segoe UI");
+    captionFont = typeface(10, FW_SEMIBOLD, L"Segoe UI");
+    symbolFont = typeface(14, FW_NORMAL, L"Segoe MDL2 Assets");
+    brandFont = typeface(28, FW_NORMAL, L"Georgia");
+    metricFont = typeface(16, FW_SEMIBOLD, L"Segoe UI");
+}
+int row_size(int style)
+{
+    switch (style)
+    {
+    case Brand:
+        return dpi(56);
+    case Favorites:
+        return dpi(34);
+    case Folder:
+        return dpi(27);
+    case Section:
+    case System:
+        return dpi(38);
+    case Group:
+        return dpi(24);
+    case Tile:
+        return dpi(32);
+    case Service:
+        return dpi(27);
+    case Meter:
+        return dpi(58);
+    case QueueLine:
+        return dpi(31);
+    case Shelf:
+        return dpi(35);
+    case Pocket:
+        return dpi(35);
+    default:
+        return dpi(28);
+    }
+}
+int footer()
+{
+    return dpi(26);
+}
+struct Layout
+{
+    struct Band
+    {
+        int index, y, bottom;
+    };
+    int maximum = 0, page = 1, treeEnd = 2, treeViewport = 0, treeStart = 0, systemStart = -1;
+    bool treeScroll = false;
+    std::vector<Band> bands;
+    explicit Layout(int pos = top)
+    {
+        if (rows.empty())
+            return;
+        RECT client{};
+        GetClientRect(window, &client);
+        const int height = client.bottom - footer(), header = row_size(Brand);
+        int total = 0;
+        for (int i = 0; i < (int)rows.size(); i++)
+        {
+            total += row_size(rows[i].style);
+            if (rows[i].style == System)
+                systemStart = i;
+        }
+        while (treeEnd < (int)rows.size() && rows[treeEnd].style == Folder)
+            treeEnd++;
+        const int treeHeight = std::max(0, treeEnd - 2) * row_size(Folder);
+        int room = height - (total - treeHeight);
+        treeScroll = total > height && room >= 3 * row_size(Folder) && treeHeight > room;
+        page = treeScroll ? room : std::max(1, height - header);
+        maximum = std::max(0, total - height);
+        pos = std::clamp(pos, 0, maximum);
+        int y = 0;
+        for (int i = 0; i < (int)rows.size(); i++)
+        {
+            const int rh = row_size(rows[i].style);
+            if (i == 1 && !treeScroll)
+                y -= pos;
+            if (i == 2)
+                treeStart = y;
+            if (i == 2 && treeScroll)
+                y -= pos;
+            if (treeScroll && i == treeEnd)
+                y = treeStart + room;
+            if (i == systemStart && total < height)
+                y += height - total;
+            bands.push_back({i, y, y + rh});
+            y += rh;
+        }
+        treeViewport = room;
+    }
+    RECT clip(const Band &b, int width) const
+    {
+        int begin = b.y, end = b.bottom;
+        if (b.index > 0)
+            begin = std::max(begin, row_size(Brand));
+        if (treeScroll && b.index >= 2 && b.index < treeEnd)
+        {
+            begin = std::max(begin, treeStart);
+            end = std::min(end, treeStart + treeViewport);
+        }
+        RECT client{};
+        GetClientRect(window, &client);
+        return {0, begin, width, std::min(end, (int)client.bottom - footer())};
+    }
+};
+struct ScrollThumb
+{
+    int y, height, track, length, range, x;
+    explicit ScrollThumb(const Layout &l)
+        : track(l.treeScroll ? l.treeStart : row_size(Brand)), length(l.page), range(l.maximum),
+          x(clientWidth() - dpi(8))
+    {
+        height = std::min(length, std::max(dpi(22), MulDiv(length, length, std::max(1, length + range))));
+        y = track + (range ? MulDiv(top, length - height, range) : 0);
+    }
+    bool contains(int px, int py) const
+    {
+        return range > 0 && px >= x - dpi(2) && px < x + dpi(5) && py >= track && py < track + length;
+    }
+};
+int scrollbarGrab = -1;
+void scroll(int pos)
+{
+    Layout layout(pos);
+    top = std::clamp(pos, 0, layout.maximum);
+    InvalidateRect(window, nullptr, FALSE);
+}
+void ensureFocus()
+{
+    Layout layout;
+    if (focus >= 0 && focus < (int)layout.bands.size())
+    {
+        auto b = layout.bands[focus];
+        int start = layout.treeScroll ? layout.treeStart : row_size(Brand);
+        if (!layout.treeScroll || (focus >= 2 && focus < layout.treeEnd))
+        {
+            if (b.y < start)
+                scroll(top + b.y - start);
+            else if (b.bottom > start + layout.page)
+                scroll(top + b.bottom - start - layout.page);
+        }
+    }
+    InvalidateRect(window, nullptr, FALSE);
+}
+void fill(HDC dc, RECT r, COLORREF color)
+{
+    SetDCBrushColor(dc, color);
+    FillRect(dc, &r, (HBRUSH)GetStockObject(DC_BRUSH));
+}
+void box(HDC dc, RECT r, COLORREF color, COLORREF line, int radius = 5)
+{
+    SelectObject(dc, GetStockObject(DC_BRUSH));
+    SelectObject(dc, GetStockObject(DC_PEN));
+    SetDCBrushColor(dc, color);
+    SetDCPenColor(dc, line);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, dpi(radius * 2), dpi(radius * 2));
+}
+void textAt(HDC dc, RECT r, const wstring &s, COLORREF color, HFONT f, UINT align = DT_LEFT)
+{
+    SelectObject(dc, f);
+    SetTextColor(dc, color);
+    SetBkMode(dc, TRANSPARENT);
+    DrawTextW(dc, s.c_str(), -1, &r, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX | align);
+}
+void icon(HDC dc, RECT r, int unicode, COLORREF color)
+{
+    textAt(dc, r, wstring(1, (wchar_t)unicode), color, symbolFont, DT_CENTER);
+}
+void folder_icon(HDC, RECT &, const wstring &);
+void brandMark(HDC dc, int x, int cy)
+{
+    int y = cy - dpi(14);
+    RECT tile{x, y, x + dpi(28), y + dpi(28)};
+    box(dc, tile, dark ? RGB(217, 191, 144) : RGB(54, 80, 64), dark ? RGB(235, 208, 163) : RGB(54, 80, 64), 7);
+    COLORREF ink = dark ? RGB(46, 53, 43) : RGB(250, 242, 216);
+    POINT mark[6] = {{x + dpi(7), y + dpi(7)},   {x + dpi(21), y + dpi(7)},  {x + dpi(19), y + dpi(11)},
+                     {x + dpi(12), y + dpi(11)}, {x + dpi(10), y + dpi(21)}, {x + dpi(6), y + dpi(22)}};
+    SetDCBrushColor(dc, ink);
+    SetDCPenColor(dc, ink);
+    Polygon(dc, mark, 6);
+    POINT arm[4] = {
+        {x + dpi(13), y + dpi(14)}, {x + dpi(20), y + dpi(14)}, {x + dpi(17), y + dpi(17)}, {x + dpi(12), y + dpi(17)}};
+    Polygon(dc, arm, 4);
+}
+int split(const Row &r, int w)
+{
+    switch (r.style)
+    {
+    case Brand:
+    case Favorites:
+    case Pocket:
+    case Shelf:
+    case ShelfFile:
+        return w - dpi(39);
+    case Folder:
+        return std::max(w / 2, w - dpi(78));
+    default:
+        return r.right.empty() ? w : w / 2;
+    }
+}
+void tile(HDC dc, RECT r, const wstring &s, int glyph, bool over, bool featured)
+{
+    r.top += dpi(2);
+    r.bottom -= dpi(2);
+    auto face = over ? hoverFill : featured ? goldWash : surface;
+    box(dc, r, face, over ? mint : border, 5);
+    icon(dc, {r.left + dpi(7), r.top, r.left + dpi(25), r.bottom}, glyph ? glyph : 0xe768, featured ? accent : muted);
+    r.left += dpi(30);
+    r.right -= dpi(5);
+    SIZE needed{};
+    SelectObject(dc, font);
+    GetTextExtentPoint32W(dc, s.data(), (int)s.size(), &needed);
+    textAt(dc, r, s, fg, needed.cx > r.right - r.left ? smallFont : font);
+}
+void service(HDC dc, RECT r, const wstring &s, bool active)
+{
+    if (s.empty())
+        return;
+    if (active)
+        box(dc, {r.left, r.top + dpi(1), r.right, r.bottom - dpi(1)}, hoverFill, hoverFill);
+    int cy = (r.top + r.bottom) / 2, x = r.left + dpi(7);
+    COLORREF c = s[0] == L'●' ? mint : muted;
+    box(dc, {x, cy - dpi(3), x + dpi(6), cy + dpi(3)}, s[0] == L'●' ? c : bg, c, 3);
+    r.left += dpi(19);
+    textAt(dc, r, s.size() > 2 ? s.substr(2) : s, fg, font);
+}
+void meter(HDC dc, RECT r, const wstring &s, int pct, bool active)
+{
+    r.top += dpi(2);
+    r.bottom -= dpi(2);
+    box(dc, r, active ? hoverFill : surface, border, 6);
+    auto cut = s.find(L"  ");
+    wstring name = s.substr(0, cut);
+    wstring value = cut == wstring::npos ? L"—" : s.substr(cut + 2);
+    RECT content{r.left + dpi(9), r.top + dpi(5), r.right - dpi(8), r.top + dpi(18)};
+    textAt(dc, content, name, muted, captionFont);
+    content.top = r.top + dpi(17);
+    content.bottom = r.bottom - dpi(11);
+    textAt(dc, content, value, fg, metricFont);
+    RECT bar{r.left + dpi(9), r.bottom - dpi(8), r.right - dpi(9), r.bottom - dpi(5)};
+    fill(dc, bar, border);
+    int pixels = MulDiv(bar.right - bar.left, std::clamp(pct, 0, 100), 100);
+    bar.right = bar.left + pixels;
+    if (pixels)
+        fill(dc, bar, pct >= 92 ? (dark ? RGB(232, 141, 116) : RGB(176, 77, 55)) : pct >= 80 ? accent : mint);
+}
+void drawBand(HDC dc, const Layout::Band &band, int w)
+{
+    int i = band.index, y = band.y, end = band.bottom, cy = (y + end) / 2;
+    const Row &r = rows[i];
+    bool over = i == hover;
+    int margin = dpi(12), div = split(r, w);
+    RECT row{margin, y, w - margin, end};
+    RECT right{div, y, w - margin, end};
+    auto arrow = r.left.find(L'▾') == 0 ? 0xe70d : 0xe76c;
+    auto caption = [&](wstring text, int x, int finish) {
+        CharUpperBuffW(text.data(), (DWORD)text.size());
+        int old = SetTextCharacterExtra(dc, dpi(1));
+        textAt(dc, {x, y, finish, end}, text, muted, captionFont);
+        SetTextCharacterExtra(dc, old);
+    };
+    switch (r.style)
+    {
+    case Brand:
+        brandMark(dc, margin, cy);
+        textAt(dc, {margin + dpi(38), y, w - dpi(73), end}, L"FavBar", fg, brandFont);
+        if (over)
+        {
+            int x = hoverSide ? w - dpi(36) : w - dpi(66);
+            box(dc, {x, cy - dpi(13), x + dpi(26), cy + dpi(13)}, surface, border);
+        }
+        icon(dc, {w - dpi(66), y, w - dpi(40), end}, 0xe712, muted);
+        icon(dc, {w - dpi(36), y, w - dpi(10), end}, edge == ABE_LEFT ? 0xe76b : 0xe76c, muted);
+        fill(dc, {margin, end - 1, w - margin, end}, border);
+        break;
+    case Favorites:
+        caption(L"Избранное", margin, w - dpi(75));
+        icon(dc, {w - dpi(68), y, w - dpi(42), end}, 0xe80f, over && !hoverSide ? accent : muted);
+        icon(dc, right, 0xe710, over && hoverSide ? accent : muted);
+        break;
+    case Folder: {
+        bool home = r.left.find(L'⌂') == 0;
+        if (home || over || i == focus)
+            box(dc, {margin - dpi(3), y + 1, w - margin + dpi(3), end - 1},
+                over   ? hoverFill
+                : home ? goldWash
+                       : surface,
+                over   ? hoverFill
+                : home ? goldWash
+                       : surface,
+                5);
+        int indent = std::min(dpi(12) * r.depth, std::max(0, div - margin - dpi(70)));
+        RECT l{margin + dpi(3) + indent, y, div - dpi(3), end};
+        if (r.depth)
+            fill(dc, {l.left - dpi(6), y + dpi(2), l.left - dpi(6) + 1, end - dpi(2)}, border);
+        folder_icon(dc, l, r.path);
+        textAt(dc, l, home ? r.left.substr(2) : r.left, fg, font);
+        auto off = r.right.find(L' ');
+        if (off != wstring::npos)
+            textAt(dc, {div, y, w - margin - dpi(16), end}, r.right.substr(off + 1), muted, smallFont, DT_RIGHT);
+        icon(dc, {w - margin - dpi(13), y, w - margin + dpi(2), end}, r.right[0] == L'▾' ? 0xe70d : 0xe76c, muted);
+        break;
+    }
+    case Pocket:
+    case Shelf:
+    case ShelfFile: {
+        bool shelf = r.style == Shelf;
+        if (r.style != ShelfFile)
+            box(dc, {margin, y + dpi(3), w - margin, end - dpi(3)}, over ? hoverFill : surface, border, 5);
+        icon(dc, {margin + dpi(6), y, margin + dpi(26), end},
+             shelf               ? 0xe8b7
+             : r.style == Pocket ? 0xe71b
+                                 : 0xe7c3,
+             shelf ? accent : muted);
+        wstring lab = r.left;
+        if (shelf && lab.size() > 2)
+            lab = lab.substr(2);
+        textAt(dc, {margin + dpi(32), y, div, end}, lab, fg, font);
+        if (shelf && r.left.find(L"(0)") == wstring::npos)
+            icon(dc, {div - dpi(27), y, div, end}, 0xe74d, hoverSide == 2 && over ? accent : muted);
+        icon(dc, right, shelf ? 0xe710 : r.style == Pocket ? 0xe8a7 : 0xe8da, muted);
+        break;
+    }
+    case Section:
+    case System: {
+        fill(dc, {margin, y + dpi(4), w - margin, y + dpi(4) + 1}, border);
+        textAt(dc, {margin, y + dpi(5), w - dpi(39), end}, r.left.size() > 2 ? r.left.substr(2) : r.left, fg, bold);
+        icon(dc, {w - margin - dpi(16), y + dpi(4), w - margin, end}, arrow, muted);
+        break;
+    }
+    case Group: {
+        bool fold = r.left.find(L'▾') == 0 || r.left.find(L'▸') == 0;
+        caption(fold ? r.left.substr(2) : r.left, margin + dpi(2), w - margin - dpi(16));
+        if (fold)
+            icon(dc, {w - margin - dpi(16), y, w - margin, end}, arrow, muted);
+        break;
+    }
+    case Service:
+        service(dc, {margin, y, div - dpi(2), end}, r.left, over && hoverSide == 0);
+        service(dc, {div + dpi(2), y, w - margin, end}, r.right, over && hoverSide == 1);
+        break;
+    case Meter:
+        meter(dc, {margin, y, div - dpi(3), end}, r.left, r.leftDetail, over && !hoverSide);
+        meter(dc, {div + dpi(3), y, w - margin, end}, r.right, r.rightDetail, over && hoverSide);
+        break;
+    case QueueLine:
+        icon(dc, {margin, y, margin + dpi(19), end}, 0xe9f5, muted);
+        textAt(dc, {margin + dpi(25), y, w - margin, end}, r.left, muted, font);
+        break;
+    default:
+        tile(dc, {margin, y, r.right.empty() ? w - margin : div - dpi(3), end}, r.left, r.leftDetail,
+             over && !hoverSide, r.leftDetail == 0xe714);
+        if (!r.right.empty())
+            tile(dc, {div + dpi(3), y, w - margin, end}, r.right, r.rightDetail, over && hoverSide, false);
+        break;
+    }
+}
+void paint()
+{
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(window, &ps);
+    RECT client{};
+    GetClientRect(window, &client);
+    int w = client.right;
+    Layout layout;
+    fill(dc, ps.rcPaint, bg);
+    for (auto &b : layout.bands)
+    {
+        RECT clip = layout.clip(b, w), area{};
+        if (!IntersectRect(&area, &clip, &ps.rcPaint))
+            continue;
+        int saved = SaveDC(dc);
+        IntersectClipRect(dc, area.left, area.top, area.right, area.bottom);
+        drawBand(dc, b, w);
+        RestoreDC(dc, saved);
+    }
+    RECT foot{0, client.bottom - footer(), w, client.bottom};
+    fill(dc, foot, surface);
+    fill(dc, {0, foot.top, w, foot.top + 1}, border);
+    wstring hint = status;
+    if (hint.empty() && hover >= 0 && hover < (int)rows.size())
+        hint = rows[hover].hint;
+    if (hint.empty() && !rows.empty())
+        hint = rows[0].hint;
+    icon(dc, {dpi(9), foot.top, dpi(27), foot.bottom}, 0xe765, muted);
+    textAt(dc, {dpi(32), foot.top, w - dpi(9), foot.bottom}, hint, muted, smallFont);
+    ScrollThumb thumb(layout);
+    if (thumb.range)
+    {
+        fill(dc, {thumb.x, thumb.track, thumb.x + dpi(2), thumb.track + thumb.length}, border);
+        fill(dc, {thumb.x, thumb.y, thumb.x + dpi(2), thumb.y + thumb.height}, scrollbarGrab >= 0 ? accent : muted);
+    }
+    EndPaint(window, &ps);
+}
+int hit(int y)
+{
+    Layout layout;
+    for (auto &b : layout.bands)
+    {
+        auto clip = layout.clip(b, clientWidth());
+        if (y >= clip.top && y < clip.bottom)
+            return b.index;
+    }
+    return -1;
+}
+int side(int i, int x)
+{
+    auto &r = rows[i];
+    int cut = split(r, clientWidth());
+    if (r.style == Shelf && r.left.find(L"(0)") == wstring::npos && x >= cut - dpi(27) && x < cut)
+        return 2;
+    return !r.right.empty() && x >= cut;
+}
