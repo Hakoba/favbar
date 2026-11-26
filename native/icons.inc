@@ -63,7 +63,7 @@ Pixels pixels(const wstring &s)
         out = {};
     return out;
 }
-void folder_icon(HDC dc, RECT &r, const wstring &spec)
+void folder_icon(HDC dc, RECT &r, const wstring &spec, COLORREF defaultColor)
 {
     static const std::map<wstring, COLORREF> colors = {{L"pink", RGB(233, 99, 161)},
                                                        {L"orange", RGB(228, 144, 50)},
@@ -94,7 +94,7 @@ void folder_icon(HDC dc, RECT &r, const wstring &spec)
     else
     {
         auto it = colors.find(spec);
-        auto c = it == colors.end() ? accent : it->second;
+        auto c = it == colors.end() ? defaultColor : it->second;
         POINT outline[] = {{x + dpi(1), y + dpi(3)},  {x + dpi(6), y + dpi(3)},   {x + dpi(8), y + dpi(5)},
                            {x + dpi(14), y + dpi(5)}, {x + dpi(14), y + dpi(12)}, {x + dpi(1), y + dpi(12)},
                            {x + dpi(1), y + dpi(3)}};

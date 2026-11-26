@@ -118,8 +118,8 @@ bool popupPaint(HWND h, UINT msg, WPARAM wp, LPARAM lp, LRESULT &out)
         HDC dc = (HDC)wp;
         int id = GetDlgCtrlID((HWND)lp);
         COLORREF face = msg == WM_CTLCOLOREDIT ? surface : bg;
-        COLORREF ink = id == TimerStatus && GetPropW(h, L"FavBarError") ? (dark ? RGB(247, 164, 146) : RGB(148, 56, 43))
-                       : id == TargetTime                               ? mint
+        COLORREF ink = id == TimerStatus && GetPropW(h, L"FavBarError") ? errorColor
+                       : id == TargetTime                               ? accent
                        : id == 0                                        ? muted
                                                                         : fg;
         SetBkColor(dc, face);
@@ -139,18 +139,14 @@ bool popupPaint(HWND h, UINT msg, WPARAM wp, LPARAM lp, LRESULT &out)
         bool primary = item.CtlID == PrimaryAction || item.CtlID == IDOK;
         bool selected = GetPropW(item.hwndItem, L"FavBarSelected") != nullptr;
         bool hot = GetPropW(item.hwndItem, L"FavBarHot") || (item.itemState & ODS_SELECTED);
-        COLORREF primaryFill = dark ? RGB(200, 220, 198) : RGB(51, 82, 62);
         COLORREF face = disabled   ? bg
-                        : primary  ? (hot ? mint : primaryFill)
-                        : selected ? goldWash
+                        : primary  ? (hot ? fg : selectionFill)
+                        : selected ? selectionFill
                         : hot      ? hoverFill
                                    : surface;
-        COLORREF ink = disabled   ? muted
-                       : primary  ? (dark ? RGB(25, 38, 28) : RGB(255, 255, 251))
-                       : selected ? accent
-                                  : fg;
+        COLORREF ink = disabled ? muted : primary && hot ? bg : fg;
         fill(dc, r, bg);
-        box(dc, r, face, primary && !disabled ? face : selected ? accent : border, 6);
+        box(dc, r, face, (primary || selected) && !disabled ? accent : border, 6);
         wchar_t label[160]{};
         GetWindowTextW(item.hwndItem, label, 160);
         textAt(dc, r, label, ink, font, DT_CENTER);
@@ -159,7 +155,7 @@ bool popupPaint(HWND h, UINT msg, WPARAM wp, LPARAM lp, LRESULT &out)
             InflateRect(&r, -dpi(4), -dpi(4));
             SelectObject(dc, GetStockObject(NULL_BRUSH));
             SelectObject(dc, GetStockObject(DC_PEN));
-            SetDCPenColor(dc, primary ? ink : mint);
+            SetDCPenColor(dc, primary ? ink : accent);
             RoundRect(dc, r.left, r.top, r.right, r.bottom, dpi(6), dpi(6));
         }
         RestoreDC(dc, saved);

@@ -16,19 +16,34 @@ enum Style
     System
 };
 HFONT smallFont{}, captionFont{}, symbolFont{}, brandFont{}, metricFont{};
-COLORREF muted, border, hoverFill, mint, goldWash;
+COLORREF muted, border, hoverFill, selectionFill, folderColor, thumbColor, onlineColor, warningColor, errorColor;
 int hoverSide = 0;
+COLORREF mixColor(COLORREF first, COLORREF second, double weight)
+{
+    auto channel = [weight](BYTE a, BYTE b) { return std::nearbyint(a * weight + b * (1.0 - weight)); };
+    return RGB(channel(GetRValue(first), GetRValue(second)), channel(GetGValue(first), GetGValue(second)),
+               channel(GetBValue(first), GetBValue(second)));
+}
 void colors()
 {
-    bg = dark ? RGB(21, 26, 26) : RGB(246, 246, 240);
-    surface = dark ? RGB(32, 39, 38) : RGB(255, 255, 251);
-    fg = dark ? RGB(238, 239, 230) : RGB(33, 44, 39);
-    accent = dark ? RGB(229, 196, 144) : RGB(124, 83, 31);
-    mint = dark ? RGB(124, 203, 173) : RGB(39, 121, 94);
-    muted = dark ? RGB(155, 169, 160) : RGB(89, 103, 95);
-    border = dark ? RGB(53, 65, 59) : RGB(211, 218, 206);
-    goldWash = dark ? RGB(49, 46, 36) : RGB(242, 234, 209);
-    hoverFill = dark ? RGB(47, 59, 52) : RGB(228, 237, 225);
+    bg = dark ? RGB(27, 28, 32) : RGB(247, 248, 250);
+    surface = dark ? RGB(35, 36, 41) : RGB(255, 255, 255);
+    fg = dark ? RGB(227, 229, 234) : RGB(28, 32, 36);
+    muted = dark ? RGB(144, 151, 161) : RGB(100, 107, 117);
+    border = dark ? RGB(45, 47, 53) : RGB(226, 229, 233);
+    hoverFill = dark ? RGB(42, 44, 50) : RGB(236, 238, 241);
+    folderColor = dark ? RGB(143, 152, 168) : RGB(125, 134, 150);
+    thumbColor = dark ? RGB(59, 62, 69) : RGB(200, 205, 211);
+    onlineColor = dark ? RGB(60, 207, 127) : RGB(24, 160, 88);
+    warningColor = dark ? RGB(227, 179, 65) : RGB(194, 124, 14);
+    errorColor = dark ? RGB(244, 112, 103) : RGB(209, 36, 47);
+    DWORD raw = 0, size = sizeof(raw);
+    COLORREF systemAccent = RGB(10, 100, 200);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"AccentColor", RRF_RT_REG_DWORD, nullptr,
+                     &raw, &size) == ERROR_SUCCESS)
+        systemAccent = raw & 0xffffff;
+    accent = dark ? mixColor(systemAccent, RGB(255, 255, 255), .6) : mixColor(systemAccent, RGB(0, 0, 0), .85);
+    selectionFill = mixColor(systemAccent, bg, dark ? .24 : .14);
 }
 HFONT typeface(int size, int weight, const wchar_t *family)
 {
@@ -266,13 +281,13 @@ void icon(HDC dc, RECT r, int unicode, COLORREF color)
 {
     textAt(dc, r, wstring(1, (wchar_t)unicode), color, symbolFont, DT_CENTER);
 }
-void folder_icon(HDC, RECT &, const wstring &);
+void folder_icon(HDC, RECT &, const wstring &, COLORREF);
 void brandMark(HDC dc, int x, int cy)
 {
     int y = cy - dpi(14);
     RECT tile{x, y, x + dpi(28), y + dpi(28)};
-    box(dc, tile, dark ? RGB(217, 191, 144) : RGB(54, 80, 64), dark ? RGB(235, 208, 163) : RGB(54, 80, 64), 7);
-    COLORREF ink = dark ? RGB(46, 53, 43) : RGB(250, 242, 216);
+    box(dc, tile, fg, fg, 7);
+    COLORREF ink = bg;
     POINT mark[6] = {{x + dpi(7), y + dpi(7)},   {x + dpi(21), y + dpi(7)},  {x + dpi(19), y + dpi(11)},
                      {x + dpi(12), y + dpi(11)}, {x + dpi(10), y + dpi(21)}, {x + dpi(6), y + dpi(22)}};
     SetDCBrushColor(dc, ink);
@@ -312,8 +327,8 @@ void tile(HDC dc, RECT r, const wstring &s, int glyph, bool over, bool featured)
 {
     r.top += dpi(2);
     r.bottom -= dpi(2);
-    auto face = over ? hoverFill : featured ? goldWash : surface;
-    box(dc, r, face, over ? mint : border, 5);
+    auto face = over ? hoverFill : featured ? selectionFill : surface;
+    box(dc, r, face, over ? accent : border, 5);
     icon(dc, {r.left + dpi(7), r.top, r.left + dpi(25), r.bottom}, glyph ? glyph : 0xe768, featured ? accent : muted);
     r.left += dpi(30);
     r.right -= dpi(5);
@@ -329,7 +344,7 @@ void service(HDC dc, RECT r, const wstring &s, bool active)
     if (active)
         box(dc, {r.left, r.top + dpi(1), r.right, r.bottom - dpi(1)}, hoverFill, hoverFill);
     int cy = (r.top + r.bottom) / 2, x = r.left + dpi(7);
-    COLORREF c = s[0] == L'●' ? mint : muted;
+    COLORREF c = s[0] == L'●' ? onlineColor : muted;
     box(dc, {x, cy - dpi(3), x + dpi(6), cy + dpi(3)}, s[0] == L'●' ? c : bg, c, 3);
     r.left += dpi(19);
     textAt(dc, r, s.size() > 2 ? s.substr(2) : s, fg, font);
@@ -352,7 +367,7 @@ void meter(HDC dc, RECT r, const wstring &s, int pct, bool active)
     int pixels = MulDiv(bar.right - bar.left, std::clamp(pct, 0, 100), 100);
     bar.right = bar.left + pixels;
     if (pixels)
-        fill(dc, bar, pct >= 92 ? (dark ? RGB(232, 141, 116) : RGB(176, 77, 55)) : pct >= 80 ? accent : mint);
+        fill(dc, bar, pct >= 92 ? errorColor : pct >= 80 ? warningColor : accent);
 }
 void drawBand(HDC dc, const Layout::Band &band, int w)
 {
@@ -394,23 +409,23 @@ void drawBand(HDC dc, const Layout::Band &band, int w)
         if (home || over || i == focus)
             box(dc, {margin - dpi(3), y + 1, w - margin + dpi(3), end - 1},
                 over   ? hoverFill
-                : home ? goldWash
+                : home ? selectionFill
                        : surface,
                 over   ? hoverFill
-                : home ? goldWash
+                : home ? selectionFill
                        : surface,
                 5);
         RECT l = folderContent(r, w, y, end);
         if (r.depth)
             fill(dc, {l.left - dpi(6), y + dpi(2), l.left - dpi(6) + 1, end - dpi(2)}, border);
-        folder_icon(dc, l, r.path);
-        textAt(dc, l, home ? r.left.substr(2) : r.left, over && !hoverSide ? mint : fg, font);
+        folder_icon(dc, l, r.path, r.depth == 0 || r.right.find(L'▾') == 0 ? accent : folderColor);
+        textAt(dc, l, home ? r.left.substr(2) : r.left, over && !hoverSide ? accent : fg, font);
         auto off = r.right.find(L' ');
         if (off != wstring::npos)
             textAt(dc, {div, y, w - margin - dpi(16), end}, r.right.substr(off + 1), muted, smallFont, DT_RIGHT);
         if (folderBranch(r))
             icon(dc, {w - margin - dpi(13), y, w - margin + dpi(2), end}, r.right[0] == L'▾' ? 0xe70d : 0xe76c,
-                 over && hoverSide ? mint : muted);
+                 over && hoverSide ? accent : muted);
         break;
     }
     case Pocket:
@@ -530,7 +545,8 @@ void drawPanel(HDC dc, RECT dirty)
     if (thumb.range)
     {
         fill(dc, {thumb.x, thumb.track, thumb.x + dpi(2), thumb.track + thumb.length}, border);
-        fill(dc, {thumb.x, thumb.y, thumb.x + dpi(2), thumb.y + thumb.height}, scrollbarGrab >= 0 ? accent : muted);
+        fill(dc, {thumb.x, thumb.y, thumb.x + dpi(2), thumb.y + thumb.height},
+             scrollbarGrab >= 0 ? accent : thumbColor);
     }
 }
 void paint()

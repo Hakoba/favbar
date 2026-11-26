@@ -93,9 +93,9 @@ LRESULT CALLBACK toolListProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         auto r = d.rcItem;
         bool selected = (d.itemState & ODS_SELECTED) != 0;
         int saved = SaveDC(d.hDC);
-        fill(d.hDC, r, selected ? hoverFill : bg);
+        fill(d.hDC, r, selected ? selectionFill : bg);
         if (selected)
-            fill(d.hDC, {r.left, r.top + dpi(6), r.left + dpi(2), r.bottom - dpi(6)}, mint);
+            fill(d.hDC, {r.left, r.top + dpi(6), r.left + dpi(2), r.bottom - dpi(6)}, accent);
         RECT sym{r.left + dpi(7), r.top, r.left + dpi(33), r.bottom};
         icon(d.hDC, sym, search ? 0xe8b7 : item.running ? 0xe768 : 0xe823, search || item.running ? accent : muted);
         r.left += dpi(39);

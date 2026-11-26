@@ -2,6 +2,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <cwchar>
@@ -68,8 +69,12 @@ void event(int kind, int row = -1, int side = 0, wstring data = {})
     events.push_back({kind, row, side, std::move(data)});
 }
 void colors();
+int paletteMode = -1;
 void palette(int mode)
 {
+    if (mode == paletteMode)
+        return;
+    paletteMode = mode;
     DWORD light = 1, bytes = sizeof(light);
     RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
                  L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &bytes);
@@ -357,11 +362,11 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             InflateRect(&highlight, -dpi(4), -dpi(1));
             box(item->hDC, highlight, hoverFill, hoverFill, 6);
         }
-        COLORREF ink = entry.item.destructive ? (dark ? RGB(247, 164, 146) : RGB(148, 56, 43)) : fg;
+        COLORREF ink = entry.item.destructive ? errorColor : fg;
         if (entry.item.glyph)
             icon(item->hDC, {rect.left + dpi(11), rect.top, rect.left + dpi(31), rect.bottom}, entry.item.glyph,
                  entry.item.destructive ? ink
-                 : hot                  ? mint
+                 : hot                  ? accent
                                         : muted);
         rect.left += dpi(13 + entry.gutter);
         rect.right -= dpi(12);
@@ -401,7 +406,10 @@ LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         event(5);
         return 0;
+    case WM_DWMCOLORIZATIONCOLORCHANGED:
     case WM_SETTINGCHANGE:
+        paletteMode = -1;
+        [[fallthrough]];
     case WM_DISPLAYCHANGE:
         if (window)
         {
@@ -702,9 +710,10 @@ extern "C"
     }
     void ui_finish(int theme)
     {
-        auto previous = bg;
+        auto oldBg = bg, oldAccent = accent, oldSelection = selectionFill;
         palette(theme);
-        if (previous != bg)
+        bool themeChanged = oldBg != bg || oldAccent != accent || oldSelection != selectionFill;
+        if (themeChanged)
         {
             refreshTimerTheme();
             if (strataDialog)
@@ -718,7 +727,7 @@ extern "C"
                    a.style == b.style && a.depth == b.depth && a.leftDetail == b.leftDetail &&
                    a.rightDetail == b.rightDetail;
         };
-        bool relayout = previous != bg || rows.size() != nextRows.size() ||
+        bool relayout = themeChanged || rows.size() != nextRows.size() ||
                         !std::equal(rows.begin(), rows.end(), nextRows.begin(),
                                     [](const Row &a, const Row &b) { return a.style == b.style; });
         if (!relayout && std::equal(rows.begin(), rows.end(), nextRows.begin(), same))
