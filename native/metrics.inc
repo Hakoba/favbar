@@ -148,13 +148,17 @@ extern "C"
     {
         ULARGE_INTEGER n;
         n.QuadPart = seconds * 10000000ULL + 116444736000000000ULL;
-        FILETIME utc{n.LowPart, n.HighPart}, local;
-        SYSTEMTIME st;
+        FILETIME utc{n.LowPart, n.HighPart};
+        SYSTEMTIME utcTime, st, today;
         result.clear();
-        if (FileTimeToLocalFileTime(&utc, &local) && FileTimeToSystemTime(&local, &st))
+        if (FileTimeToSystemTime(&utc, &utcTime) && SystemTimeToTzSpecificLocalTimeEx(nullptr, &utcTime, &st))
         {
+            GetLocalTime(&today);
             wchar_t s[32];
-            swprintf_s(s, L"%02u.%02u.%02u", st.wDay, st.wMonth, st.wYear % 100);
+            if (st.wYear == today.wYear && st.wMonth == today.wMonth && st.wDay == today.wDay)
+                swprintf_s(s, L"%02u:%02u", st.wHour, st.wMinute);
+            else
+                swprintf_s(s, L"%02u.%02u.%02u", st.wDay, st.wMonth, st.wYear % 100);
             result = s;
         }
         return result.c_str();
